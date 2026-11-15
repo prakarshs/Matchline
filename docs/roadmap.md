@@ -1,9 +1,6 @@
 # Sequential commit plan
 
-Each item represents a sequential **manual** Git commit. The user has confirmed and pushed commits 01–09 (including the corrected
-journal-tail test and the IntelliJ HTTP collection). Commit 10 is supplied
-for verification, not yet confirmed on the user machine. Later commits remain
-planned. Do not claim results before user verification.
+Each item represents a sequential **manual** Git commit. The user confirmed commits 01–09; Commit 10 was committed locally with verified HTTP benchmark output, but its push reported no upstream branch. Actual JMH execution has not yet been reported. Commit 11 code is supplied for user browser/test verification, and Commit 12 remains planned. Do not claim remote pushes or visual checks without user evidence.
 
 | Commit | Implementation target | Verification gate |
 |---|---|---|

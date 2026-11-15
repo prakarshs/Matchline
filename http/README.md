@@ -81,3 +81,10 @@ Open [`05-metrics.http`](05-metrics.http) to inspect JSON/Prometheus counters an
 These endpoints have no dynamic order-ID labels. They share the same HTTP request
 budget as other diagnostics, so do not hammer them. For controlled HTTP measurements,
 use `python3 scripts/bench_http.py` rather than repeatedly clicking IntelliJ requests.
+
+### Commit 11 — browser laboratory
+
+Open [`06-exchange-lab.http`](06-exchange-lab.http) to check both pages and
+static assets. The actual **visual interaction** happens at `/lab` in a browser;
+`/preview` is an intentionally read-only, embeddable-by-allowlist version.
+The browser polls the same API used by this collection. See the root README.

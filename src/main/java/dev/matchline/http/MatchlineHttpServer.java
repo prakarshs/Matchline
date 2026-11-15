@@ -210,6 +210,11 @@ public final class MatchlineHttpServer implements AutoCloseable {
             } finally { sessionLock.readLock().unlock(); }
             return;
         }
+        if (UiAssets.serves(path) && "GET".equals(method)) {
+            UiAssets.send(x, path, config.embedOrigin());
+            httpMetrics.response(200);
+            return;
+        }
         if ("/openapi.yaml".equals(path) && "GET".equals(method)) {
             try (InputStream resource = MatchlineHttpServer.class.getResourceAsStream("/openapi.yaml")) {
                 if (resource == null) throw new ApiError(500, "SPEC_MISSING", "OpenAPI resource not packaged");

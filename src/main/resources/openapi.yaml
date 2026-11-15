@@ -10,6 +10,34 @@ info:
 servers:
   - url: http://127.0.0.1:8080
 paths:
+  /lab:
+    get:
+      operationId: getExchangeLab
+      summary: Full same-origin exchange laboratory (HTML)
+      description: >-
+        Java-served browser UI for real order placement/cancellation, depth,
+        process-local tapes and startup recovery metadata. No client-side engine.
+        Default CSP prohibits iframe embedding.
+      responses:
+        '200':
+          description: Full interactive lab page
+          content:
+            text/html:
+              schema: {type: string}
+  /preview:
+    get:
+      operationId: getCompactPreview
+      summary: Read-only, responsive browser preview (HTML)
+      description: >-
+        Polls the same Java server. No submission, cancellation or reset controls.
+        Can be framed only when MATCHLINE_EMBED_ORIGIN explicitly specifies
+        an exact portfolio origin; independent of CORS.
+      responses:
+        '200':
+          description: Read-only portfolio preview
+          content:
+            text/html:
+              schema: {type: string}
   /api/v1/health:
     get:
       operationId: getHealth

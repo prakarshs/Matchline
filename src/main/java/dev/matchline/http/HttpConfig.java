@@ -15,6 +15,7 @@ public final class HttpConfig {
     private final InetSocketAddress bind;
     private final String allowedOrigin;
     private final String resetToken;
+    private final String embedOrigin;
     private final Path journalPath;
     private final Path snapshotPath;
     private final DurabilityPolicy durability;
@@ -22,6 +23,13 @@ public final class HttpConfig {
 
     public HttpConfig(InetSocketAddress bind, String allowedOrigin, String resetToken,
                       Path journalPath, Path snapshotPath, DurabilityPolicy durability, int queueCapacity) {
+        this(bind, allowedOrigin, resetToken, journalPath, snapshotPath, durability,
+                queueCapacity, null);
+    }
+
+    public HttpConfig(InetSocketAddress bind, String allowedOrigin, String resetToken,
+                      Path journalPath, Path snapshotPath, DurabilityPolicy durability,
+                      int queueCapacity, String embedOrigin) {
         this.bind = Objects.requireNonNull(bind, "bind");
         if (bind.isUnresolved() || bind.getPort() < 0 || bind.getPort() > 65535) {
             throw new IllegalArgumentException("HTTP bind address must resolve and port must be 0..65535");
@@ -39,6 +47,20 @@ public final class HttpConfig {
                 throw new IllegalArgumentException("CORS origin must be one exact http(s) origin", invalid);
             }
         }
+        if (embedOrigin != null && !embedOrigin.isBlank()) {
+            try {
+                URI uri = URI.create(embedOrigin);
+                if (uri.getHost() == null || uri.getUserInfo() != null
+                        || (uri.getRawPath() != null && !uri.getRawPath().isEmpty())
+                        || uri.getRawQuery() != null || uri.getRawFragment() != null
+                        || !("https".equals(uri.getScheme()) || "http".equals(uri.getScheme()))
+                        || !uri.toString().equals(embedOrigin)) {
+                    throw new IllegalArgumentException("not a valid origin");
+                }
+            } catch (IllegalArgumentException invalid) {
+                throw new IllegalArgumentException("embed origin must be one exact http(s) origin", invalid);
+            }
+        }
         if (resetToken != null && !resetToken.isEmpty() && resetToken.length() < 32) {
             throw new IllegalArgumentException("reset token must contain at least 32 characters");
         }
@@ -49,6 +71,7 @@ public final class HttpConfig {
             throw new IllegalArgumentException("queue capacity must be 1..65536");
         }
         this.allowedOrigin = allowedOrigin == null || allowedOrigin.isBlank() ? null : allowedOrigin;
+        this.embedOrigin = embedOrigin == null || embedOrigin.isBlank() ? null : embedOrigin;
         this.resetToken = resetToken == null || resetToken.isBlank() ? null : resetToken;
         this.journalPath = journalPath == null ? null : journalPath.toAbsolutePath().normalize();
         this.snapshotPath = snapshotPath == null ? null : snapshotPath.toAbsolutePath().normalize();
@@ -68,7 +91,8 @@ public final class HttpConfig {
                     env.containsKey("MATCHLINE_JOURNAL_PATH") ? Path.of(env.get("MATCHLINE_JOURNAL_PATH")) : null,
                     env.containsKey("MATCHLINE_SNAPSHOT_PATH") ? Path.of(env.get("MATCHLINE_SNAPSHOT_PATH")) : null,
                     DurabilityPolicy.valueOf(env.getOrDefault("MATCHLINE_DURABILITY", "SYNC_EACH_RECORD")),
-                    Integer.parseInt(env.getOrDefault("MATCHLINE_QUEUE_CAPACITY", "1024")));
+                    Integer.parseInt(env.getOrDefault("MATCHLINE_QUEUE_CAPACITY", "1024")),
+                    env.get("MATCHLINE_EMBED_ORIGIN"));
         } catch (UnknownHostException badHost) {
             throw new IllegalArgumentException("invalid HTTP bind host", badHost);
         }
@@ -76,6 +100,7 @@ public final class HttpConfig {
 
     public InetSocketAddress bind() { return bind; }
     public String allowedOrigin() { return allowedOrigin; }
+    public String embedOrigin() { return embedOrigin; }
     public String resetToken() { return resetToken; }
     public Path journalPath() { return journalPath; }
     public Path snapshotPath() { return snapshotPath; }
@@ -84,6 +109,7 @@ public final class HttpConfig {
 
     @Override public String toString() {
         return "HttpConfig[bind=" + bind + ", journal=" + (journalPath != null)
-                + ", cors=" + (allowedOrigin != null) + ", reset=" + (resetToken != null) + "]";
+                + ", cors=" + (allowedOrigin != null) + ", embed=" + (embedOrigin != null)
+                + ", reset=" + (resetToken != null) + "]";
     }
 }

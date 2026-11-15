@@ -4,7 +4,22 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 10 / isolated JMH benchmarks and bounded operational metrics.** The Java 21 matching engine, ordered cancellation, single-writer ingress, CRC32C journal, deterministic replay, validated snapshots and bounded HTTP interface are implemented. The benchmark harness and live metrics endpoints are implemented; verified machine-specific performance numbers, browser visualization and public deployment remain future increments. This is an exchange **simulator**, never real trading infrastructure.
+> **Status: Commit 11 / interactive laboratory delivered for browser verification.** The Java 21 matching engine, single-writer ingress, journal/replay/snapshots, HTTP adapter, JMH harness and operational metrics are implemented. The full browser lab and read-only preview now use the real HTTP engine; visual browser testing, actual JMH measurements, hardened public ingress and hosting remain user verification/release work. This is an exchange **simulator**, never real trading infrastructure.
+
+## Interactive Exchange Laboratory (Commit 11)
+
+With the real HTTP server running (`./gradlew run --args='--serve' --no-daemon --max-workers=1 --console=plain`), open:
+
+- **Full lab:** <http://127.0.0.1:8080/lab> — place/cancel orders, inspect bid/ask depth, executions, recent commands, metrics and recovery state; step through three deterministic command *scripts*.
+- **Compact read-only preview:** <http://127.0.0.1:8080/preview> — a responsive, continuously refreshed slice of the **same server** for later portfolio embedding.
+
+Both are served as classpath resources from the Java 21 server; there is no frontend build, CDN, separate JavaScript matching engine, or cross-origin API configuration. The UI polls the real book and process-local tapes every four seconds (five seconds in preview). Pausing an inactive tab reduces requests; the server's existing global rate budget still applies. All user-visible fills and command outcomes come from the HTTP server.
+
+**Scenario caveat:** demo scripts place real orders into the *current* book. They do not reset it or guarantee isolation from other users/orders. Run the experiments against a fresh volatile session for a controlled narrative; click each step separately and inspect the actual decision. The preview is read-only. The recovery panel displays startup verification metadata, not an on-demand replay endpoint. Recent trade/event tapes are process-local; a restart does not restore those tapes, even when the book is journal-recovered.
+
+**Embedding defaults to forbidden.** To permit only the read-only preview to be framed by one exact portfolio HTTPS origin, export `MATCHLINE_EMBED_ORIGIN=https://your-portfolio.example` before starting the server. `/lab`, all JSON APIs, and static assets retain `frame-ancestors 'none'`. This variable does not change CORS; no CORS is needed for same-origin requests inside the iframe. A local `file://` portfolio cannot be allowlisted through CSP. The portfolio will be wired only after a real HTTPS deploy is verified. Do not bind this unauthenticated order API directly to the public internet; public deployment hardening remains Commit 12.
+
+Run Java integration tests with `./gradlew clean test --no-daemon --max-workers=1 --console=plain`. Optional frontend pure-function tests: `node --test ui/tests/*.test.mjs` (Node 20+; no npm install). See [Commit 11 handoff](docs/COMMIT-11-HANDOFF.md) and [ADR 0012](docs/adr/0012-same-origin-exchange-lab.md).
 
 ## Canonical development environment
 
@@ -37,7 +52,7 @@ MATCHLINE BOOTSTRAP OK | Java 21
 matching=true http=true journal=true
 ```
 
-Commits 01–09 were verified in the user's environment. Commit 10 adds opt-in JMH and operational metrics; the Gradle/JUnit suite and JMH runner must still be verified in the user's WSL environment. Reports are written to `build/reports/tests/test/`.
+Commits 01–09 were verified in the user's environment. Commit 10 HTTP metrics/benchmark were exercised by the user and committed locally; the user must finish configuring the `main` upstream push, and actual JMH output has not yet been shared. Commit 11 tests and browser scenarios require user verification. Reports are written to `build/reports/tests/test/`.
 
 Expected recovery demo output:
 

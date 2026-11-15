@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en" data-view="lab">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#151714">
+  <meta name="description" content="MATCHLINE: a real, single-writer, deterministic order-matching laboratory. Place orders, inspect FIFO depth, trades and recovery status.">
+  <title>MATCHLINE — The Exchange Laboratory</title>
+  <link rel="icon" href="/ui/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/app.css">
+  <script type="module" src="/ui/app.mjs"></script>
+</head>
+<body class="lab-view">
+  <a class="skip-link" href="#workspace">Skip to the exchange</a>
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <header class="site-header shell">
+    <a href="/lab" class="brand" aria-label="MATCHLINE laboratory home"><span class="brand-icon" aria-hidden="true">M<span class="brand-pip">.</span></span><span>MATCHLINE<span class="brand-caption">/ EXCHANGE LAB</span></span></a>
+    <nav class="top-links" aria-label="Lab navigation"><a href="#workspace">Terminal</a><a href="#scenarios">Scenarios</a><a href="#internals">Internals</a><a href="/openapi.yaml" target="_blank" rel="noopener">API specification ↗</a></nav>
+    <div class="connection-pill" id="connection" role="status"><span class="pulse-dot"></span><span id="connection-text">Connecting</span></div>
+  </header>
+  <main class="shell">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="asterisk" aria-hidden="true">✳</span> THE EXCHANGE LABORATORY <span class="eyebrow-divider">/</span> INSTRUMENT 001: DEMO</p>
+        <h1 id="hero-title">Every order <em>has a consequence.</em></h1>
+        <p class="hero-text">Place a limit order. Watch the single writer decide its fate. Explore price–time priority, partial fills, and the recovery boundary of a real Java matching engine.</p>
+        <div class="hero-facts"><span><span class="fact-dash">↳</span> Not a trading venue</span><span><span class="fact-dash">↳</span> Integer price ticks</span><span><span class="fact-dash">↳</span> Real backend decisions</span></div>
+      </div>
+      <div class="hero-telemetry" aria-label="Engine telemetry">
+        <div class="telemetry-upper"><span>ENGINE / LIVE STATE</span><span class="live-label"><span class="pulse-dot"></span> POLLING 4S</span></div>
+        <div class="big-sequence"><span class="sequence-prefix">SEQ /</span><span id="hero-sequence">—</span></div>
+        <div class="trace-line" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+        <div class="telemetry-footer"><span>ONE WRITER<br><strong>DETERMINISTIC ORDER</strong></span><span>INBOX<br><strong id="hero-inbox">— / —</strong></span><span>POLICY<br><strong id="hero-durability">—</strong></span></div>
+      </div>
+    </section>
+    <section class="workspace-section" id="workspace" aria-labelledby="terminal-title">
+      <div class="section-heading"><div><p class="eyebrow">01 / THE TERMINAL</p><h2 id="terminal-title">The order <span>floor.</span></h2></div><div class="section-meta">BOOK: <strong>DEMO</strong><span class="meta-slash"> / </span> <span id="refresh-label">Waiting for server</span></div></div>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <div class="terminal-grid">
+        <section class="panel entry-panel" aria-labelledby="entry-title">
+          <div class="panel-header"><div><span class="panel-index">01.A</span><h3 id="entry-title">Enter an order</h3></div><span class="panel-mini">LIMIT ONLY</span></div>
+          <div class="panel-body">
+            <p class="panel-description">Commands enter a bounded queue. One writer determines their sequence.</p>
+            <div class="side-switch" role="group" aria-label="Order side"><button id="side-buy" type="button" class="is-active buy-mode" aria-pressed="true">↑ Buy</button><button id="side-sell" type="button" aria-pressed="false">↓ Sell</button></div>
+            <form id="order-form" novalidate>
+              <label class="field"><span>ORDER ID <small>Unique per session</small></span><input id="order-id" name="orderId" autocomplete="off" spellcheck="false" minlength="1" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]*" required></label>
+              <label class="field"><span>LIMIT PRICE <small>Ticks, not money</small></span><div class="input-wrap"><input id="price" name="priceTicks" type="number" min="1" max="1000000000" step="1" inputmode="numeric" required value="100"><span>TKS</span></div></label>
+              <label class="field"><span>QUANTITY <small>Whole units</small></span><div class="input-wrap"><input id="quantity" name="quantity" type="number" min="1" max="1000000" step="1" inputmode="numeric" required value="5"><span>UNITS</span></div></label>
+              <button id="submit-order" class="action-button" type="submit">Submit buy order <span aria-hidden="true">↗</span></button>
+            </form>
+            <div class="quick-actions"><button id="new-id" type="button" class="text-button">↻ Generate ID</button><span>Submissions affect live state</span></div>
+            <div class="divider-line"></div>
+            <form id="cancel-form" class="cancel-form"><label class="field"><span>CANCEL RESTING ID</span><input id="cancel-id" autocomplete="off" spellcheck="false" placeholder="Order ID" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"></label><button id="cancel-button" type="submit" class="outline-button">Cancel remainder ↗</button></form>
+          </div>
+        </section>
+        <section class="panel book-panel" aria-labelledby="book-title">
+          <div class="panel-header"><div><span class="panel-index">01.B</span><h3 id="book-title">Order book</h3></div><span class="panel-mini" id="book-asof">SEQ —</span></div>
+          <div class="book-toolbar"><span>PRICE / TICKS</span><span>TOTAL QTY</span><span>ORDERS</span></div>
+          <div class="book-columns"><div class="book-side"><div class="book-side-title ask-title">ASKS <span>SELL</span></div><div id="asks" class="depth-list" aria-label="Ask levels"><div class="empty-levels">Waiting for asks</div></div></div><div class="book-spread"><span>SPREAD / TKS</span><strong id="spread">—</strong><small id="midpoint">MID —</small></div><div class="book-side"><div class="book-side-title bid-title">BIDS <span>BUY</span></div><div id="bids" class="depth-list" aria-label="Bid levels"><div class="empty-levels">Waiting for bids</div></div></div></div>
+          <div class="book-footer"><span>BEST BID <strong id="best-bid">—</strong></span><span>BEST ASK <strong id="best-ask">—</strong></span><span>RESTING <strong id="resting-count">—</strong></span></div>
+        </section>
+        <section class="panel tape-panel" aria-labelledby="tape-title"><div class="panel-header"><div><span class="panel-index">01.C</span><h3 id="tape-title">Execution tape</h3></div><span class="panel-mini">LATEST / 12</span></div><div class="tape-heading"><span>SEQUENCE / MAKER → TAKER</span><span>QTY @ TICKS</span></div><ol id="trades" class="tape-list"><li class="empty-feed">No trades observed yet.</li></ol><div class="tape-caption">Process-local observed fills. A restart clears this tape; journal recovery is separate.</div></section>
+      </div>
+    </section>
+    <section class="scenarios-section" id="scenarios" aria-labelledby="scenarios-title"><div class="section-heading"><div><p class="eyebrow">02 / CONTROLLED EXPERIMENTS</p><h2 id="scenarios-title">See the rules <span>in motion.</span></h2></div><p class="section-aside">Each step sends one real HTTP command. No animation invents a trade.</p></div>
+      <div class="scenario-grid"><button type="button" class="scenario-card" data-scenario="fifo" aria-pressed="false"><span class="scenario-no">EXPERIMENT 01 <span>↗</span></span><strong>First in.<br>First out.</strong><span class="scenario-illustration fifo-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="scenario-desc">Two resting sellers at one tick. One buyer consumes them in arrival order.</span></button><button type="button" class="scenario-card" data-scenario="sweep" aria-pressed="false"><span class="scenario-no">EXPERIMENT 02 <span>↗</span></span><strong>Across the<br>spread.</strong><span class="scenario-illustration sweep-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="scenario-desc">A large buy sweeps through two prices. Makers set the execution ticks.</span></button><button type="button" class="scenario-card" data-scenario="cancel" aria-pressed="false"><span class="scenario-no">EXPERIMENT 03 <span>↗</span></span><strong>Cancel.<br>Then cross.</strong><span class="scenario-illustration cancel-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="scenario-desc">Remove an order before the opposing side arrives. Observe what remains.</span></button></div>
+      <div class="scenario-runner" id="scenario-runner" aria-live="polite"><div class="runner-left"><span class="panel-index">SCENARIO / READY</span><strong id="scenario-name">Choose an experiment above</strong><p id="scenario-description">Scenarios add to the current book. Use a fresh volatile session for exact isolated outcomes.</p></div><div class="runner-actions"><span id="scenario-progress">0 / 0</span><button type="button" class="action-button" id="scenario-step" disabled>Execute next step <span aria-hidden="true">→</span></button></div><ol id="scenario-steps" class="scenario-steps"></ol></div>
+    </section>
+    <section class="internals-section" id="internals" aria-labelledby="internals-title"><div class="section-heading"><div><p class="eyebrow">03 / UNDER THE HOOD</p><h2 id="internals-title">Decisions, not <span>illusions.</span></h2></div><p class="section-aside">Observability from the same running server.</p></div>
+      <div class="internals-grid"><section class="panel events-panel" aria-labelledby="events-title"><div class="panel-header"><div><span class="panel-index">03.A</span><h3 id="events-title">Ordered decisions</h3></div><span class="panel-mini">RECENT / 12</span></div><ol id="events" class="events-list"><li class="empty-feed">Awaiting commands.</li></ol><div class="panel-footnote">Sequenced outcomes recorded by the live HTTP process; not the replayed journal.</div></section><section class="panel recovery-panel" aria-labelledby="recovery-title"><div class="panel-header"><div><span class="panel-index">03.B</span><h3 id="recovery-title">Recovery / durability</h3></div><span class="panel-mini">STARTUP EVIDENCE</span></div><dl class="detail-list"><div><dt>Journal policy</dt><dd id="policy">—</dd></div><div><dt>Recovered at boot</dt><dd id="recovered">—</dd></div><div><dt>Snapshot sequence</dt><dd id="snapshot-seq">—</dd></div><div><dt>Replayed decisions</dt><dd id="replayed">—</dd></div><div><dt>Unacknowledged resolved</dt><dd id="pending">—</dd></div></dl><p class="panel-footnote">This panel reports actual startup metadata; it does not claim that replay can be triggered from the browser.</p></section><section class="panel metrics-panel" aria-labelledby="metrics-title"><div class="panel-header"><div><span class="panel-index">03.C</span><h3 id="metrics-title">Live counters</h3></div><span class="panel-mini">PROCESS-LOCAL</span></div><div class="metrics-grid"><div><small>WRITER COMPLETED</small><strong id="metric-completed">—</strong></div><div><small>BUSINESS REJECTED</small><strong id="metric-rejected">—</strong></div><div><small>ACK p99 BUCKET</small><strong id="metric-p99">—</strong></div><div><small>HTTP 2xx</small><strong id="metric-http">—</strong></div></div><p class="panel-footnote">p99 is a histogram bucket upper bound, not a precise request percentile.</p><a class="inline-link" href="/metrics" target="_blank" rel="noopener">Prometheus exposition ↗</a></section></div>
+    </section>
+  </main>
+  <footer class="site-footer shell"><div><span class="brand-icon footer-mark" aria-hidden="true">M.</span><strong>MATCHLINE</strong><small>ENGINEERING AN EXPLANATION</small></div><span>Educational exchange simulator. No real assets, accounts, or money.</span><a href="/preview" target="_blank" rel="noopener">Compact preview ↗</a></footer>
+</body>
+</html>

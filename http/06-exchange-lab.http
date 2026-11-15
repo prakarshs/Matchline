@@ -1,0 +1,43 @@
+### Open the full laboratory HTML
+GET {{baseUrl}}/lab
+
+> {%
+client.test('Full browser laboratory served', function () {
+    client.assert(response.status === 200);
+    client.assert(response.body.includes('id="order-form"'));
+    client.assert(response.body.includes('/ui/app.mjs'));
+});
+%}
+
+### Open the read-only compact preview HTML
+GET {{baseUrl}}/preview
+
+> {%
+client.test('Preview includes no placement form', function () {
+    client.assert(response.status === 200);
+    client.assert(!response.body.includes('id="order-form"'));
+    client.assert(response.body.includes('data-view="preview"'));
+});
+%}
+
+### Check the packed JavaScript module
+GET {{baseUrl}}/ui/app.mjs
+
+> {%
+client.test('UI uses real order API', function () {
+    client.assert(response.status === 200);
+    client.assert(response.body.includes('/api/v1/orders'));
+});
+%}
+
+### Refresh the live book used by both UIs
+GET {{baseUrl}}/api/v1/book?depth=5
+
+> {%
+client.test('Read book at sequence boundary', function () {
+    client.assert(response.status === 200);
+    const b = response.body;
+    client.assert(b.instrument === 'DEMO');
+    client.assert(typeof b.asOfSequence === 'number');
+});
+%}
