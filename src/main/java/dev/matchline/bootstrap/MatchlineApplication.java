@@ -4,8 +4,8 @@ import java.io.PrintStream;
 import java.util.Objects;
 
 /**
- * Commit 01 is an executable, dependency-free Java bootstrap, NOT a matching engine.
- * CLI exit status 0 indicates a healthy bootstrap only, not exchange readiness.
+ * Dependency-free CLI bootstrap and self-check. The matching core is currently
+ * available via Java API, not CLI/HTTP; exit status 0 is not exchange readiness.
  */
 public final class MatchlineApplication {
 
@@ -35,9 +35,9 @@ public final class MatchlineApplication {
 
         return switch (option) {
             case "--help" -> {
-                out.println("MATCHLINE | deterministic exchange simulator | bootstrap only");
+                out.println("MATCHLINE | deterministic exchange simulator | Java core");
                 out.println("Usage: matchline [--help | --version | --self-check]");
-                out.println("No matching engine, journal, or HTTP service exists in Commit 01.");
+                out.println("In-memory matching: Java API only. No CLI orders, journal, or HTTP service.");
                 yield 0;
             }
             case "--version" -> {
@@ -51,7 +51,9 @@ public final class MatchlineApplication {
                     yield 1;
                 }
                 out.println("MATCHLINE BOOTSTRAP OK | Java " + javaFeature);
-                out.println("matching=false http=false journal=false");
+                out.println("matching=" + status.matchingAvailable()
+                        + " http=" + status.httpAvailable()
+                        + " journal=" + status.journalAvailable());
                 yield 0;
             }
             default -> {

@@ -1,6 +1,8 @@
 # Sequential commit plan
 
-Each item is a future **manual** Git commit. Only 01 is in this starter ZIP. Do not mark later items complete without your own test evidence.
+Each item represents a sequential **manual** Git commit. The user has confirmed and pushed
+01–03. Commit 04 is supplied for verification, not yet confirmed on the user machine.
+Later commits remain planned. Do not claim results before user verification.
 
 | Commit | Implementation target | Verification gate |
 |---|---|---|

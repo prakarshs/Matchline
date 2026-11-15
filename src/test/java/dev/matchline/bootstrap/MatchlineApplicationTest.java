@@ -11,11 +11,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MatchlineApplicationTest {
 
     @Test
-    void selfCheckReportsOnlyBootstrapCapabilities() {
+    void selfCheckReportsInMemoryMatchingAvailability() {
         Result result = invoke("--self-check");
 
         assertThat(result.exitCode()).isZero();
-        assertThat(result.stdout()).contains("MATCHLINE BOOTSTRAP OK", "matching=false http=false journal=false");
+        assertThat(result.stdout()).contains("MATCHLINE BOOTSTRAP OK", "matching=true http=false journal=false");
         assertThat(result.stderr()).isEmpty();
     }
 
@@ -24,7 +24,7 @@ class MatchlineApplicationTest {
         Result result = invoke();
 
         assertThat(result.exitCode()).isZero();
-        assertThat(result.stdout()).contains("--self-check", "No matching engine");
+        assertThat(result.stdout()).contains("--self-check", "Java API only");
     }
 
     @Test
