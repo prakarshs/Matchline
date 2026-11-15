@@ -12,6 +12,10 @@ import dev.matchline.domain.PlaceLimitOrder;
 import dev.matchline.domain.PriceTicks;
 import dev.matchline.domain.RejectionCode;
 import dev.matchline.domain.Side;
+import dev.matchline.journal.DurabilityPolicy;
+import dev.matchline.journal.FileCommandJournal;
+
+import java.io.IOException;
 
 import java.time.Duration;
 import java.util.List;
@@ -34,9 +38,11 @@ import java.util.function.Supplier;
  * Business rejections (including duplicate IDs, wrong instrument and missing
  * cancel targets) ARE sequenced and complete with {@link CommandDecision.Rejected}.
  *
- * <p>A completion means the in-memory decision is finished. All state is volatile:
- * on crash, accepted/completed commands can be lost. Commit 07 will define the
- * journal/fsync/acknowledgement boundary. This is NOT a real exchange.
+ * <p>Without a journal, completion remains volatile. With a fresh journal attached,
+ * each command is appended before book mutation and each decision afterward.
+ * SYNC_EACH_RECORD completion confirms both frames were forced to disk;
+ * OS_BUFFERED completion does not. Recovery/replay is deferred to Commit 08.
+ * This is NOT a real exchange.
  *
  * <p>Completion callbacks may execute inline on the writer thread: NEVER do
  * blocking work in non-async dependent actions. Use thenApplyAsync/whenCompleteAsync
@@ -51,6 +57,7 @@ public final class SingleWriterSequencer implements AutoCloseable {
     private final ArrayBlockingQueue<WorkItem> queue;
     private final int capacity;
     private final Consumer<OrderCommand> beforeCommand;
+    private final FileCommandJournal journal;
     private final Thread writer;
     private volatile boolean accepting = true;
     private volatile long lastAdmittedSequence;
@@ -68,7 +75,19 @@ public final class SingleWriterSequencer implements AutoCloseable {
 
     public SingleWriterSequencer(InstrumentId instrument, int queueCapacity,
                                  int maxRestingOrders, int maxOrderIds) {
-        this(instrument, queueCapacity, maxRestingOrders, maxOrderIds, ignored -> { });
+        this(instrument, queueCapacity, maxRestingOrders, maxOrderIds, ignored -> { }, null);
+    }
+
+    /**
+     * Attach a FRESH journal before any commands are admitted. The sequencer
+     * owns and closes this journal. Nonempty files cannot be attached until
+     * Commit 08 implements state reconstruction from the recorded history.
+     */
+    public SingleWriterSequencer(InstrumentId instrument, int queueCapacity,
+                                 int maxRestingOrders, int maxOrderIds,
+                                 FileCommandJournal journal) {
+        this(instrument, queueCapacity, maxRestingOrders, maxOrderIds,
+                ignored -> { }, Objects.requireNonNull(journal, "journal"));
     }
 
     // Package-private controlled scheduler hook for deterministic concurrency tests.
@@ -76,11 +95,20 @@ public final class SingleWriterSequencer implements AutoCloseable {
     SingleWriterSequencer(InstrumentId instrument, int queueCapacity,
                           int maxRestingOrders, int maxOrderIds,
                           Consumer<OrderCommand> beforeCommand) {
+        this(instrument, queueCapacity, maxRestingOrders, maxOrderIds, beforeCommand, null);
+    }
+
+    private SingleWriterSequencer(InstrumentId instrument, int queueCapacity,
+                                  int maxRestingOrders, int maxOrderIds,
+                                  Consumer<OrderCommand> beforeCommand,
+                                  FileCommandJournal journal) {
         if (queueCapacity < 1 || queueCapacity > MAX_QUEUE_CAPACITY) {
             throw new IllegalArgumentException("queueCapacity must be 1.." + MAX_QUEUE_CAPACITY);
         }
         this.book = new LimitOrderBook(Objects.requireNonNull(instrument, "instrument"),
                 maxRestingOrders, maxOrderIds);
+        if (journal != null) journal.claimFresh(instrument);
+        this.journal = journal;
         this.beforeCommand = Objects.requireNonNull(beforeCommand, "beforeCommand");
         this.capacity = queueCapacity;
         this.queue = new ArrayBlockingQueue<>(queueCapacity);
@@ -92,6 +120,11 @@ public final class SingleWriterSequencer implements AutoCloseable {
 
     public InstrumentId instrument() {
         return book.instrument(); // Immutable value; never reads mutable book state.
+    }
+
+    /** Empty means this sequencer has only volatile in-memory acknowledgements. */
+    public Optional<DurabilityPolicy> journalDurabilityPolicy() {
+        return journal == null ? Optional.empty() : Optional.of(journal.durabilityPolicy());
     }
 
     /**
@@ -270,11 +303,23 @@ public final class SingleWriterSequencer implements AutoCloseable {
         } catch (InterruptedException unexpected) {
             Thread.currentThread().interrupt();
             failStop(null, unexpected);
+        } finally {
+            if (journal != null) {
+                try {
+                    journal.close();
+                } catch (IOException closeFailure) {
+                    failStop(null, closeFailure);
+                }
+            }
         }
     }
 
-    private void execute(CommandWork work) {
+    private void execute(CommandWork work) throws IOException {
         beforeCommand.accept(work.command());
+        // WAL: a command must be recorded before any mutating book operation.
+        // A crash after this append but before decision append is an AMBIGUOUS
+        // outcome; it is deliberately NOT reported as a successful completion.
+        if (journal != null) journal.appendCommand(work.sequence(), work.command());
         CommandDecision decision;
         try {
             if (work.command() instanceof PlaceLimitOrder place) {
@@ -287,6 +332,9 @@ public final class SingleWriterSequencer implements AutoCloseable {
         } catch (OrderValidationException rejected) {
             decision = new CommandDecision.Rejected(CommandRejection.fromValidation(rejected));
         }
+        // Synchronous mode forces the outcome before the public completion.
+        // An append/force failure after mutation FAIL-STOPS this writer.
+        if (journal != null) journal.appendDecision(work.sequence(), decision);
         lastProcessedSequence = work.sequence();
         work.completion().complete(new SequencedResult(work.sequence(), work.command(), decision));
     }

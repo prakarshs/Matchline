@@ -1,7 +1,7 @@
 # Sequential commit plan
 
 Each item represents a sequential **manual** Git commit. The user has confirmed and pushed
-01–05. Commit 06 is supplied for verification, not yet confirmed on the user machine.
+01–06. Commit 07 is supplied for verification, not yet confirmed on the user machine.
 Later commits remain planned. Do not claim results before user verification.
 
 | Commit | Implementation target | Verification gate |

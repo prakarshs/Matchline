@@ -4,7 +4,7 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 06 / single-writer in-memory matching gateway.** The Java 21 core supports price-time priority, partial/multiple fills, cancellation of resting remainders, immutable result values, and lifetime duplicate-ID rejection per book instance. Concurrent bounded ingress and in-memory ordered completions are implemented. A durable journal, HTTP and the browser demo remain future increments.
+> **Status: Commit 07 / append-only versioned command/outcome journal.** The Java 21 matching core, cancellation, bounded single-writer ingress and optional file journaling are implemented. Replay-based restoration, snapshots, HTTP and the browser demo remain future increments. Journal crash durability depends on the configured force policy; see ADR 0008.
 
 ## Canonical development environment
 
@@ -33,12 +33,12 @@ Expected output from the self-check (JDK feature may be newer if you intentional
 
 ```text
 MATCHLINE BOOTSTRAP OK | Java 21
-matching=true http=false journal=false
+matching=true http=false journal=true
 ```
 
-Expected after Commit 06: the **133 Commit 05 cases** plus 17 newly added sequencer tests (150 total), subject to your actual Gradle test report. This is a planned case count, not a sandbox JUnit result. Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
+After Commit 07, the 150 prior test invocations (reported by the user as passing after Commit 06) are supplemented by the new journal tests. This document does not claim those tests passed in the user's WSL until the user runs Gradle. Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
 
-There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 06.
+There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 07.
 
 ## Docker smoke test (optional)
 
@@ -60,17 +60,17 @@ flowchart LR
   E --> G[Replay and recovery]
 ```
 
-Planned separation: core Java code holds domain rules; adapters handle HTTP and storage; state changes are made only by a sequenced writer per book. No database or network call enters the matching hot path. The plain-Java domain and in-memory price-time matching core exist; the single-writer gateway is implemented; persistence remains future work.
+Current separation: core Java code holds matching rules; a sequenced writer can optionally append binary journal frames to disk. A forced disk write adds I/O to the command path by design. HTTP and recovery snapshots are future work.
 
-For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-06-HANDOFF.md`](docs/COMMIT-05-HANDOFF.md).
+For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-07-HANDOFF.md`](docs/COMMIT-07-HANDOFF.md).
 
 ## Current domain contract and limitations
 
-- `PlaceLimitOrder(instrument, orderId, side, price, quantity)` and `CancelOrder(instrument, orderId)` are immutable validated requests. Both placing a limit order (`LimitOrderBook.executeLimit`) and cancelling a resting remainder (`LimitOrderBook.cancel`) are executable in memory; no journal or public command gateway exists.
+- `PlaceLimitOrder(instrument, orderId, side, price, quantity)` and `CancelOrder(instrument, orderId)` are immutable validated requests. Both placing a limit order (`LimitOrderBook.executeLimit`) and cancelling a resting remainder (`LimitOrderBook.cancel`) are executable in memory; a journaled sequencer exists, but no HTTP gateway is present.
 - Instrument: 1–12 ASCII uppercase characters, starting A–Z; IDs: 1–64 ASCII characters, starting alphanumeric. Neither is normalized. The planned initial instrument is `DEMO`.
 - Price: whole ticks from **1 to 1,000,000,000**; new-order quantity: **1 to 1,000,000**. Invalid inputs fail fast with machine-readable rejection codes. No floating-point arithmetic.
 - Maximum **per-order** abstract tick-notional is `10^15`; it is not a currency amount. Totals across orders must still be checked.
-- The book rejects **all previously accepted** placement IDs within the same book instance, including fully executed/cancelled IDs. ID history is capped at 1,000,000 accepted orders by default (configurable to 2,000,000 maximum), and is not durable yet. Unknown or previously completed cancel targets reject with `ORDER_NOT_FOUND`. See [ADR 0006](docs/adr/0006-cancellation-id-history-and-amend-policy.md).
+- The book rejects **all previously accepted** placement IDs within the same book instance, including fully executed/cancelled IDs. ID history is capped at 1,000,000 accepted orders by default (configurable to 2,000,000 maximum); accepted placement commands are journaled when enabled, but restoring the ID history waits for Commit 08. Unknown or previously completed cancel targets reject with `ORDER_NOT_FOUND`. See [ADR 0006](docs/adr/0006-cancellation-id-history-and-amend-policy.md).
 
 ## Current in-memory matching book (Commits 03–05)
 
@@ -98,7 +98,7 @@ var fifoAt100 = book.ordersAt(Side.BUY, new PriceTicks(100));
 - Add to an existing price level and lookup by ID: expected O(1); creating a new price level: O(log P), where P = price levels. Best-price access: O(log P) worst-case. A depth/queue read is proportional to the result size.
 - `executeLimit` matches crossed makers at their resting prices, preserving FIFO on partial fills and removing fully filled makers from both indexes. It rests any unmatched remainder behind existing orders at its price. Rejection preflight handles instrument mismatch, active duplicate IDs and no-capacity remainders **before any mutation**. Lifetime ID reuse prohibition is now enforced with a bounded in-memory ID history.
 - The older `addResting` methods are retained for controlled seeding and residual storage. They still reject crossed insertion rather than executing it, and now also consume IDs from the same lifetime history.
-- Default capacity 50,000 resting orders/book (hard configuration ceiling 100,000); `depth` accepts 1..1,000 levels. Read views/lists are immutable; the book itself is **not thread-safe**, pending the sequencer.
+- Default capacity 50,000 resting orders/book (hard configuration ceiling 100,000); `depth` accepts 1..1,000 levels. Read views/lists are immutable; the book itself is **not thread-safe**; the sequencer is its safe ingress path.
 - Local insertion ordinals exist only to explain FIFO: they are not acceptance sequence IDs, persisted journal offsets or durability acknowledgements.
 
 Cancels remove only outstanding quantity, not past trades, and can eliminate a price level. There is **no amend command**; cancel + place a new ID loses FIFO priority and is not atomic. See [ADR 0004](docs/adr/0004-price-level-order-book.md), [ADR 0005](docs/adr/0005-in-memory-matching-and-capacity.md), [ADR 0006](docs/adr/0006-cancellation-id-history-and-amend-policy.md), and [Commit 05 handoff](docs/COMMIT-05-HANDOFF.md).
@@ -127,17 +127,43 @@ Queue overload (`INGRESS_OVERLOADED`) and closed ingress (`INGRESS_CLOSED`)
 reject synchronously and **do not** consume a sequence. A successfully queued
 command that later fails business validation **does** consume a sequence and
 returns `CommandDecision.Rejected`. Reads run in queue order on the writer but
-do not consume command sequence numbers. Completion indicates **volatile
-in-memory processing, not journal write or fsync**. `stopAccepting()` drains
+do not consume command sequence numbers. Without a journal, completion confirms
+**only volatile processing**; with `SYNC_EACH_RECORD`, completion follows two
+forced records (command plus outcome). `stopAccepting()` drains
 already queued work; `close()` waits for graceful termination (10-second limit).
 Read [ADR 0007](docs/adr/0007-single-writer-ingress-and-acknowledgements.md)
 and [Commit 06 handoff](docs/COMMIT-06-HANDOFF.md) for precise concurrency
 and lifecycle semantics.
 
+## Append-only file journal (Commit 07)
+
+The journal is optional, explicit and attached **only to a new empty book**. Create a parent directory outside the Git repository or under the ignored `local-data/` directory:
+
+```java
+import dev.matchline.journal.*;
+import dev.matchline.sequencer.*;
+import dev.matchline.domain.InstrumentId;
+import java.nio.file.Path;
+
+var symbol = new InstrumentId("DEMO");
+var journal = FileCommandJournal.createNew(
+    Path.of("local-data/demo.mlj"), symbol, DurabilityPolicy.SYNC_EACH_RECORD);
+try (var engine = new SingleWriterSequencer(symbol, 1024, 50_000, 1_000_000, journal)) {
+    // submit validated commands and await ticket.completion() as in Commit 06
+}
+JournalScan scan = FileCommandJournal.scan(
+    Path.of("local-data/demo.mlj"), TailPolicy.STRICT);
+// scan.entries(): alternating command and outcome records, except a pending last command
+```
+
+`createNew` never overwrites an existing file. `SYNC_EACH_RECORD` forces the command record **before** matching and forces its outcome **before** completing the future. `OS_BUFFERED` is faster in principle but does **not** promise crash durability. In either mode, the admission ticket is not a durable acknowledgement. CRC32C protects every record against accidental corruption. A complete bad-CRC frame is always fatal. Offline `TRUNCATE_INCOMPLETE_TAIL` can explicitly discard just a partially written final frame; the remaining `Command` (if any) is reported as **pending/ambiguous**. Never invoke offline repair while the writer is running. Read [ADR 0008](docs/adr/0008-versioned-journal-and-durability.md) before interpreting crash outcomes.
+
+**There is deliberately no restore-from-existing-journal path yet.** Reopening an old journal into a new empty book would be unsafe: replay and state equivalence are Commit 08. Do not delete/overwrite an old journal just to restart. The journal is an append-only single-file development format; full recovery, compaction and version migrations are not present.
+
 ## Current limitations
 
-- The bounded single-writer sequencer exists, but neither order-ID history nor any result is persisted. Queue admission and completed in-memory commands can both be lost on process failure.
-- No HTTP API, SSE, persistence, journal replay, recovery snapshot or benchmark. Reapplying an identical in-memory list in a test is NOT crash recovery.
+- The volatile sequencer mode still loses data on crash. The synchronous journal writes durable command/outcome frames, but Commit 08 must reconstruct state and resolve incomplete command/outcome pairs after restart.
+- No HTTP API, SSE, journal replay, recovery snapshot or benchmark. Reapplying an identical in-memory list in a test is NOT crash recovery.
 - The raw `LimitOrderBook` remains single-thread-owned and unsafe for direct concurrent callers. Use `SingleWriterSequencer` for concurrent admission and owner-thread read access. The CLI has a self-check, not an interactive order-placement interface.
 - No production suitability, deployment URL, latency number or throughput claim.
 - Initial dependency downloads require internet access. `MANIFEST.sha256` is the historical **Commit 01 bootstrap ZIP** integrity manifest, not a rolling source-tree digest.

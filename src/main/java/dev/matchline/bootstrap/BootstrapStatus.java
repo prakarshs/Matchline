@@ -12,7 +12,7 @@ public record BootstrapStatus(
         boolean journalAvailable
 ) {
     public static BootstrapStatus current() {
-        return new BootstrapStatus("MATCHLINE", "0.1.0-SNAPSHOT", true, false, false);
+        return new BootstrapStatus("MATCHLINE", "0.1.0-SNAPSHOT", true, false, true);
     }
 
     public static boolean supportedJavaFeature(int javaFeature) {
