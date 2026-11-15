@@ -1,0 +1,73 @@
+# MATCHLINE | 02: read-only diagnostics + isolated validation requests
+# Select `local` or `local-alt-port` from the HTTP Client environment selector.
+# These requests do not depend on first running 01-matching-flow.http.
+# Invalid command bodies must not consume a sequence; unknown cancellations would consume one,
+# so none are included in this independent diagnostic file.
+
+### Health
+GET {{baseUrl}}/api/v1/health
+
+### OpenAPI contract (YAML)
+GET {{baseUrl}}/openapi.yaml
+
+### Book depth
+GET {{baseUrl}}/api/v1/book?depth=10
+
+### Trade tape (process-local, capped)
+GET {{baseUrl}}/api/v1/trades?limit=20
+
+### Decision tape (process-local, capped)
+GET {{baseUrl}}/api/v1/events?limit=20
+
+### Sequencer status
+GET {{baseUrl}}/api/v1/status
+
+### Last startup recovery report (not a live replay)
+GET {{baseUrl}}/api/v1/recovery
+
+### Invalid quantity (400 / 422, before sequencer admission)
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{
+  "instrument": "{{instrument}}",
+  "orderId": "BAD_QUANTITY",
+  "side": "BUY",
+  "priceTicks": 100,
+  "quantity": 0
+}
+
+> {%
+  client.test("invalid quantity rejected", function () {
+    client.assert(response.status >= 400 && response.status < 500,
+      "Expected 4xx domain validation error");
+  });
+%}
+
+### Unknown field (schema rejects extra keys)
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{
+  "instrument": "{{instrument}}",
+  "orderId": "BAD_FIELDS",
+  "side": "BUY",
+  "priceTicks": 100,
+  "quantity": 2,
+  "currency": "USD"
+}
+
+> {%
+  client.test("unknown request field is rejected", function () {
+    client.assert(response.status === 400, "Expected HTTP 400");
+  });
+%}
+
+### Invalid depth (out of bounds)
+GET {{baseUrl}}/api/v1/book?depth=0
+
+> {%
+  client.test("depth limit enforced", function () {
+    client.assert(response.status === 400, "Expected HTTP 400");
+  });
+%}

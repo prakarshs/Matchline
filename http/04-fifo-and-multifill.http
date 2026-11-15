@@ -1,0 +1,78 @@
+# MATCHLINE | 04: price-time priority and multi-maker fills
+# Use on a FRESH volatile session for deterministic assertions.
+# Place S1 (2 @ 100) before S2 (3 @ 100), then S3 (1 @ 101).
+# An incoming BUY (5 @ 102) must fill S1=2, S2=3 at 100, leave S3 untouched.
+# Separate file so the simple walkthrough remains easy to run.
+
+### Seed first maker SELL (2 @ 100)
+< {%
+  const runId = Date.now().toString() + Math.floor(Math.random() * 1000000).toString();
+  client.global.set("fifoSell1", "F1" + runId);
+  client.global.set("fifoSell2", "F2" + runId);
+  client.global.set("fifoSell3", "F3" + runId);
+  client.global.set("fifoBuy", "FB" + runId);
+%}
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{"instrument":"{{instrument}}","orderId":"{{fifoSell1}}","side":"SELL","priceTicks":100,"quantity":2}
+
+> {%
+  client.test("first maker rests", function () {
+    client.assert(response.status === 200 && response.body.restingQuantity === 2, "Expected 2 resting");
+  });
+%}
+
+### Seed second maker SELL (3 @ 100, behind S1)
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{"instrument":"{{instrument}}","orderId":"{{fifoSell2}}","side":"SELL","priceTicks":100,"quantity":3}
+
+> {%
+  client.test("second maker rests", function () {
+    client.assert(response.status === 200 && response.body.restingQuantity === 3, "Expected 3 resting");
+  });
+%}
+
+### Seed third maker SELL (1 @ 101, worse price)
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{"instrument":"{{instrument}}","orderId":"{{fifoSell3}}","side":"SELL","priceTicks":101,"quantity":1}
+
+> {%
+  client.test("third maker rests", function () {
+    client.assert(response.status === 200 && response.body.restingQuantity === 1, "Expected 1 resting");
+  });
+%}
+
+### Incoming BUY crosses both 100-tick makers (5 @ 102)
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{"instrument":"{{instrument}}","orderId":"{{fifoBuy}}","side":"BUY","priceTicks":102,"quantity":5}
+
+> {%
+  client.test("price and FIFO determine exact multi-maker fills", function () {
+    client.assert(response.status === 200, "Expected processed order");
+    client.assert(response.body.executedQuantity === 5, "Expected 5 executed");
+    client.assert(response.body.restingQuantity === 0, "Expected no taker remainder");
+    client.assert(response.body.trades.length === 2, "Expected exactly two fills");
+    client.assert(response.body.trades[0].makerOrderId === client.global.get("fifoSell1"), "First maker not FIFO");
+    client.assert(response.body.trades[0].priceTicks === 100 && response.body.trades[0].quantity === 2, "Wrong first trade");
+    client.assert(response.body.trades[1].makerOrderId === client.global.get("fifoSell2"), "Second maker not FIFO");
+    client.assert(response.body.trades[1].priceTicks === 100 && response.body.trades[1].quantity === 3, "Wrong second trade");
+  });
+%}
+
+### Confirm higher ask price remains untouched
+GET {{baseUrl}}/api/v1/orders/{{fifoSell3}}
+
+> {%
+  client.test("higher priced ask is still resting", function () {
+    client.assert(response.status === 200, "Expected resting ask");
+    client.assert(response.body.order.priceTicks === 101, "Expected ask at 101");
+    client.assert(response.body.order.remainingQuantity === 1, "Expected 1 untouched ask");
+  });
+%}

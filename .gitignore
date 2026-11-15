@@ -20,6 +20,7 @@ Thumbs.db
 .env.*
 !.env.example
 local-data/
+http/http-client.private.env.json
 *.mlj
 *.mls
 

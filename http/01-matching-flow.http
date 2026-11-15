@@ -1,0 +1,168 @@
+# MATCHLINE | 01: matching walkthrough
+# Run on a fresh volatile server (`./gradlew run --args='--serve'`).
+# Choose the `local` IntelliJ HTTP Client environment; then run requests top-to-bottom.
+# First placement generates fresh order IDs, so this file can be rerun without reusing IDs.
+# The deterministic remaining-book checks assume no unrelated orders exist in the book.
+# No reset endpoint is called automatically.
+
+### Health
+GET {{baseUrl}}/api/v1/health
+
+> {%
+  client.test("health: HTTP 200", function () {
+    client.assert(response.status === 200, "Expected healthy HTTP server");
+    client.assert(response.body.status === "UP", "Expected status UP");
+  });
+%}
+
+### Place resting BUY (4 @ 100)
+< {%
+  const runId = Date.now().toString() + Math.floor(Math.random() * 1000000).toString();
+  client.global.set("matchlineBidId", "B" + runId);
+  client.global.set("matchlineSellId", "S" + runId);
+%}
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{
+  "instrument": "{{instrument}}",
+  "orderId": "{{matchlineBidId}}",
+  "side": "BUY",
+  "priceTicks": 100,
+  "quantity": 4
+}
+
+> {%
+  client.test("buy rests without trades", function () {
+    client.assert(response.status === 200, "Expected HTTP 200");
+    client.assert(response.body.decision === "PLACED", "Expected PLACED");
+    client.assert(response.body.executedQuantity === 0, "Expected 0 fills");
+    client.assert(response.body.restingQuantity === 4, "Expected remaining 4");
+    client.assert(response.body.trades.length === 0, "Expected no trades");
+  });
+  client.global.set("matchlineBuySequence", response.body.sequence.toString());
+%}
+
+### Lookup current resting BUY
+GET {{baseUrl}}/api/v1/orders/{{matchlineBidId}}
+
+> {%
+  client.test("buy is in the active book", function () {
+    client.assert(response.status === 200, "Expected active order");
+    client.assert(response.body.order.orderId === client.global.get("matchlineBidId"), "Wrong order ID");
+    client.assert(response.body.order.remainingQuantity === 4, "Expected remaining 4");
+  });
+%}
+
+### Cross with SELL (3 @ 99), executed at maker price 100
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{
+  "instrument": "{{instrument}}",
+  "orderId": "{{matchlineSellId}}",
+  "side": "SELL",
+  "priceTicks": 99,
+  "quantity": 3
+}
+
+> {%
+  client.test("sell matches maker price and conserves quantity", function () {
+    client.assert(response.status === 200, "Expected HTTP 200");
+    client.assert(response.body.decision === "PLACED", "Expected PLACED");
+    client.assert(response.body.executedQuantity === 3, "Expected 3 executed");
+    client.assert(response.body.restingQuantity === 0, "Expected sell fully matched");
+    client.assert(response.body.trades.length === 1, "Expected exactly one fill");
+    client.assert(response.body.trades[0].makerOrderId === client.global.get("matchlineBidId"), "Incorrect maker");
+    client.assert(response.body.trades[0].priceTicks === 100, "Trade must use maker price 100");
+    client.assert(response.body.trades[0].quantity === 3, "Expected fill quantity 3");
+    client.assert(response.body.sequence === Number(client.global.get("matchlineBuySequence")) + 1,
+      "Expected consecutive command sequence (no other writers)");
+  });
+%}
+
+### Read book after the partial fill
+GET {{baseUrl}}/api/v1/book?depth=10
+
+> {%
+  client.test("book has 1 remaining bid", function () {
+    client.assert(response.status === 200, "Expected book");
+    client.assert(response.body.bids.length === 1, "Expected one bid level on fresh server");
+    client.assert(response.body.bids[0].priceTicks === 100, "Expected 100-tick bid");
+    client.assert(response.body.bids[0].quantity === 1, "Expected 1 unit remaining");
+    client.assert(response.body.asks.length === 0, "Expected no asks");
+  });
+%}
+
+### Read the process-local trade tape
+GET {{baseUrl}}/api/v1/trades?limit=10
+
+> {%
+  client.test("observed trade is present", function () {
+    client.assert(response.status === 200, "Expected HTTP 200");
+    client.assert(response.body.source === "PROCESS_MEMORY", "Trades are not durable audit records");
+    client.assert(response.body.trades.some(t => t.makerOrderId === client.global.get("matchlineBidId")),
+      "Expected maker trade");
+  });
+%}
+
+### Read recent command outcomes
+GET {{baseUrl}}/api/v1/events?limit=10
+
+> {%
+  client.test("observed command events exist", function () {
+    client.assert(response.status === 200, "Expected HTTP 200");
+    client.assert(response.body.source === "PROCESS_MEMORY", "Events are process-local");
+    client.assert(response.body.events.length >= 2, "Expected buy and sell events");
+  });
+%}
+
+### Cancel remaining BUY (1 unit)
+POST {{baseUrl}}/api/v1/orders/{{matchlineBidId}}/cancel
+
+> {%
+  client.test("cancel only the unfilled remainder", function () {
+    client.assert(response.status === 200, "Expected HTTP 200");
+    client.assert(response.body.decision === "CANCELLED", "Expected CANCELLED");
+    client.assert(response.body.cancelledQuantity === 1, "Expected 1 unit cancelled");
+  });
+%}
+
+### Resting order no longer exists
+GET {{baseUrl}}/api/v1/orders/{{matchlineBidId}}
+
+> {%
+  client.test("cancelled order no longer rests", function () {
+    client.assert(response.status === 404, "Expected HTTP 404");
+  });
+%}
+
+### Reusing a previously accepted order ID is rejected
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{
+  "instrument": "{{instrument}}",
+  "orderId": "{{matchlineBidId}}",
+  "side": "BUY",
+  "priceTicks": 100,
+  "quantity": 1
+}
+
+> {%
+  client.test("lifetime duplicate-ID protection", function () {
+    client.assert(response.status === 409, "Expected sequenced 409 rejection");
+    client.assert(response.body.decision === "REJECTED", "Expected REJECTED");
+    client.assert(response.body.rejection.code === "DUPLICATE_ORDER_ID", "Wrong rejection code");
+  });
+%}
+
+### Cancelled order cannot be cancelled twice
+POST {{baseUrl}}/api/v1/orders/{{matchlineBidId}}/cancel
+
+> {%
+  client.test("repeat cancel is rejected", function () {
+    client.assert(response.status === 409, "Expected 409");
+    client.assert(response.body.rejection.code === "ORDER_NOT_FOUND", "Expected ORDER_NOT_FOUND");
+  });
+%}

@@ -1,0 +1,23 @@
+# MATCHLINE | 03: OPTIONAL DESTRUCTIVE demo reset
+# DO NOT run this file in Run All for regular API exploration.
+# Requires MATCHLINE_RESET_TOKEN in the server process (>=32 characters).
+# Put its matching value into http-client.private.env.json as resetToken.
+# This endpoint must REFUSE resetting journal-backed sessions (HTTP 409).
+# It is disabled by default (HTTP 404).
+
+### Reset current VOLATILE demo generation (destructive)
+POST {{baseUrl}}/api/v1/demo/reset
+Authorization: Bearer {{resetToken}}
+
+> {%
+  client.test("only an authorized volatile session can reset", function () {
+    client.assert(response.status === 200 || response.status === 403 ||
+      response.status === 404 || response.status === 409, "Unexpected reset status");
+  });
+%}
+
+### Inspect resulting session (read only)
+GET {{baseUrl}}/api/v1/status
+
+### Inspect resulting book (read only)
+GET {{baseUrl}}/api/v1/book?depth=10
