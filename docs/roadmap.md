@@ -1,9 +1,9 @@
 # Sequential commit plan
 
-Each item represents a sequential **manual** Git commit. The user has confirmed and pushed
-01–07 (Commit 07 after the torn-tail assertion correction). Commit 08 is supplied for
-verification, not yet confirmed on the user machine.
-Later commits remain planned. Do not claim results before user verification.
+Each item represents a sequential **manual** Git commit. The user has confirmed and pushed commits 01–09 (including the corrected
+journal-tail test and the IntelliJ HTTP collection). Commit 10 is supplied
+for verification, not yet confirmed on the user machine. Later commits remain
+planned. Do not claim results before user verification.
 
 | Commit | Implementation target | Verification gate |
 |---|---|---|

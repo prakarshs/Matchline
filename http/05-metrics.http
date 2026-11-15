@@ -1,0 +1,25 @@
+# MATCHLINE | 05: bounded observation (no orders are submitted here)
+# Select `local` in IntelliJ HTTP Client.
+
+### JSON engine metrics — no per-order labels
+GET {{baseUrl}}/api/v1/metrics
+
+> {%
+  client.test("metrics JSON contract", function () {
+    client.assert(response.status === 200, "Expected 200");
+    client.assert(response.body.writer !== undefined, "Expected writer counters");
+    client.assert(response.body.processingNanos !== undefined, "Expected processing histogram");
+  });
+%}
+
+### Prometheus exposition format
+GET {{baseUrl}}/metrics
+
+> {%
+  client.test("metrics endpoint responds", function () {
+    client.assert(response.status === 200, "Expected 200");
+  });
+%}
+
+### Existing status — includes live queue size, no extra load generator
+GET {{baseUrl}}/api/v1/status

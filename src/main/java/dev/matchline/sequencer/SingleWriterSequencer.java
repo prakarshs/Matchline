@@ -19,6 +19,7 @@ import dev.matchline.recovery.JournalAnchors;
 import dev.matchline.recovery.SnapshotSchedule;
 import dev.matchline.recovery.SnapshotStore;
 import dev.matchline.recovery.RecoveryReport;
+import dev.matchline.observability.EngineMetrics;
 
 import java.io.IOException;
 
@@ -61,6 +62,7 @@ public final class SingleWriterSequencer implements AutoCloseable {
     public static final int MAX_QUEUE_CAPACITY = 65_536;
 
     private final Object admissionLock = new Object();
+    private final EngineMetrics metrics = new EngineMetrics();
     private final LimitOrderBook book;
     private final ArrayBlockingQueue<WorkItem> queue;
     private final int capacity;
@@ -281,11 +283,13 @@ public final class SingleWriterSequencer implements AutoCloseable {
             }
             long candidate = lastAdmittedSequence + 1;
             CompletableFuture<SequencedResult> completion = new CompletableFuture<>();
-            if (!queue.offer(new CommandWork(candidate, command, completion))) {
+            if (!queue.offer(new CommandWork(candidate, command, completion, System.nanoTime()))) {
+                metrics.rejectedFull();
                 throw new OrderValidationException(RejectionCode.INGRESS_OVERLOADED,
                         "bounded sequencer inbox is full");
             }
             lastAdmittedSequence = candidate;
+            metrics.admittedCommand();
             return new CommandTicket(candidate, completion.minimalCompletionStage());
         }
     }
@@ -327,18 +331,26 @@ public final class SingleWriterSequencer implements AutoCloseable {
             ensureAccepting();
             CompletableFuture<T> future = new CompletableFuture<>();
             if (!queue.offer(new ReadWork<>(read, future))) {
+                metrics.rejectedFull();
                 throw new OrderValidationException(RejectionCode.INGRESS_OVERLOADED,
                         "bounded sequencer inbox is full");
             }
+            metrics.admittedRead();
             return future;
         }
     }
 
     private void ensureAccepting() {
         if (!accepting) {
+            metrics.rejectedClosed();
             throw new OrderValidationException(RejectionCode.INGRESS_CLOSED,
                     "sequencer is closed to new work");
         }
+    }
+
+    /** Weakly consistent fixed-memory performance counters (no changes to sequencing). */
+    public EngineMetrics.Snapshot metricsSnapshot() {
+        return metrics.snapshot();
     }
 
     /** Highest sequence successfully admitted into the volatile inbox. */
@@ -458,6 +470,7 @@ public final class SingleWriterSequencer implements AutoCloseable {
     }
 
     private void execute(CommandWork work) throws IOException {
+        long startedNanos = System.nanoTime();
         beforeCommand.accept(work.command());
         // WAL: a command must be recorded before any mutating book operation.
         // A crash after this append but before decision append is an AMBIGUOUS
@@ -473,6 +486,11 @@ public final class SingleWriterSequencer implements AutoCloseable {
             // writer fail-stops; the journal remains the recovery authority.
             SnapshotStore.writeAtomically(snapshots.path(), book.snapshot(work.sequence()), journal.checkpoint());
         }
+        long completedNanos = System.nanoTime();
+        metrics.completedCommand(decision instanceof CommandDecision.Rejected,
+                Math.max(0L, startedNanos - work.admittedNanos()),
+                Math.max(0L, completedNanos - startedNanos),
+                Math.max(0L, completedNanos - work.admittedNanos()));
         work.completion().complete(new SequencedResult(work.sequence(), work.command(), decision));
     }
 
@@ -482,7 +500,12 @@ public final class SingleWriterSequencer implements AutoCloseable {
         java.util.ArrayList<WorkItem> abandoned = new java.util.ArrayList<>();
         synchronized (admissionLock) {
             accepting = false;
-            fatalFailure = error;
+            if (fatalFailure == null) {
+                fatalFailure = error;
+                metrics.failedWriter();
+            } else if (fatalFailure != error) {
+                fatalFailure.addSuppressed(error);
+            }
             if (current != null) {
                 abandoned.add(current);
             }
@@ -498,7 +521,7 @@ public final class SingleWriterSequencer implements AutoCloseable {
     }
 
     private record CommandWork(long sequence, OrderCommand command,
-                               CompletableFuture<SequencedResult> completion) implements WorkItem {
+                               CompletableFuture<SequencedResult> completion, long admittedNanos) implements WorkItem {
         @Override
         public void fail(Throwable error) {
             completion.completeExceptionally(error);

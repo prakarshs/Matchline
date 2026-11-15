@@ -21,6 +21,8 @@ import dev.matchline.sequencer.CommandTicket;
 import dev.matchline.sequencer.RecoveredSequencer;
 import dev.matchline.sequencer.SequencedResult;
 import dev.matchline.sequencer.SingleWriterSequencer;
+import dev.matchline.observability.HttpMetrics;
+import dev.matchline.observability.MetricsFormat;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -67,6 +69,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
     private final ReentrantReadWriteLock sessionLock = new ReentrantReadWriteLock(true);
     private final Semaphore concurrency = new Semaphore(MAX_IN_FLIGHT);
     private final RateLimit rateLimit = new RateLimit();
+    private final HttpMetrics httpMetrics = new HttpMetrics();
     private final RecentTape tape;
     private SingleWriterSequencer engine;
     private RecoveryReport recovered;
@@ -142,6 +145,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
                                boolean existingJournal) { }
 
     private void dispatch(HttpExchange exchange) throws IOException {
+        long startedNanos = System.nanoTime();
         try {
             commonHeaders(exchange);
             String path = exchange.getRequestURI().getRawPath();
@@ -158,6 +162,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
                 exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, Authorization");
                 exchange.getResponseHeaders().set("Access-Control-Max-Age", "600");
                 exchange.sendResponseHeaders(204, -1);
+                httpMetrics.response(204);
                 return;
             }
             if (!"GET".equals(method) && !"POST".equals(method)) {
@@ -190,6 +195,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
             // Avoid leaking filesystem paths, exception class names, tokens, or stack traces.
             sendError(exchange, 500, "INTERNAL_ERROR", "request could not be completed", null);
         } finally {
+            httpMetrics.duration(System.nanoTime() - startedNanos);
             exchange.close();
         }
     }
@@ -210,8 +216,30 @@ public final class MatchlineHttpServer implements AutoCloseable {
                 byte[] bytes = resource.readAllBytes();
                 x.getResponseHeaders().set("Content-Type", "application/yaml; charset=utf-8");
                 x.sendResponseHeaders(200, bytes.length);
+                httpMetrics.response(200);
                 x.getResponseBody().write(bytes);
             }
+            return;
+        }
+        if (("/api/v1/metrics".equals(path) || "/metrics".equals(path)) && "GET".equals(method)) {
+            sessionLock.readLock().lock();
+            try {
+                if (closed) throw new ApiError(503, "SERVICE_CLOSED", "HTTP service is closed");
+                var engineMetrics = engine.metricsSnapshot();
+                var http = httpMetrics.snapshot();
+                if ("/metrics".equals(path)) {
+                    byte[] data = MetricsFormat.prometheus(engineMetrics, http, generation,
+                            engine.queuedWorkCount(), engine.queueCapacity())
+                            .getBytes(StandardCharsets.UTF_8);
+                    x.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+                    x.sendResponseHeaders(200, data.length);
+                    httpMetrics.response(200);
+                    x.getResponseBody().write(data);
+                } else {
+                    send(x, 200, MetricsFormat.asJson(engineMetrics, http, generation,
+                            engine.lastProcessedSequence(), engine.queuedWorkCount(), engine.queueCapacity()));
+                }
+            } finally { sessionLock.readLock().unlock(); }
             return;
         }
         if ("/api/v1/demo/reset".equals(path) && "POST".equals(method)) {
@@ -440,14 +468,15 @@ public final class MatchlineHttpServer implements AutoCloseable {
         }
     }
 
-    private static void send(HttpExchange exchange, int code, Object value) throws IOException {
+    private void send(HttpExchange exchange, int code, Object value) throws IOException {
         byte[] body = Json.encode(value).getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         exchange.sendResponseHeaders(code, body.length);
+        httpMetrics.response(code);
         exchange.getResponseBody().write(body);
     }
 
-    private static void sendError(HttpExchange exchange, int status, String code, String message,
+    private void sendError(HttpExchange exchange, int status, String code, String message,
                                   Long sequence) throws IOException {
         Map<String, Object> result = ApiView.of("error", ApiView.of("code", code, "message", message));
         if (sequence != null) result.put("sequence", sequence);

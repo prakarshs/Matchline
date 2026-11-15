@@ -73,3 +73,11 @@ not permission to blindly retry using a different ID.
 
 For the API definition see `src/main/resources/openapi.yaml`. For endpoint
 behavior and server configuration see `docs/COMMIT-09-HANDOFF.md`.
+
+
+### Commit 10 — metrics inspection
+
+Open [`05-metrics.http`](05-metrics.http) to inspect JSON/Prometheus counters and histogram buckets.
+These endpoints have no dynamic order-ID labels. They share the same HTTP request
+budget as other diagnostics, so do not hammer them. For controlled HTTP measurements,
+use `python3 scripts/bench_http.py` rather than repeatedly clicking IntelliJ requests.

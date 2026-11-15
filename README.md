@@ -4,7 +4,7 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 09 / real HTTP API and controlled volatile demo reset.** The Java 21 matching engine, ordered cancellation, single-writer ingress, CRC32C journal, deterministic replay, validated snapshots and bounded HTTP interface are implemented. JMH, browser visualization and public deployment remain future increments. This is an exchange **simulator**, never real trading infrastructure.
+> **Status: Commit 10 / isolated JMH benchmarks and bounded operational metrics.** The Java 21 matching engine, ordered cancellation, single-writer ingress, CRC32C journal, deterministic replay, validated snapshots and bounded HTTP interface are implemented. The benchmark harness and live metrics endpoints are implemented; verified machine-specific performance numbers, browser visualization and public deployment remain future increments. This is an exchange **simulator**, never real trading infrastructure.
 
 ## Canonical development environment
 
@@ -37,7 +37,7 @@ MATCHLINE BOOTSTRAP OK | Java 21
 matching=true http=true journal=true
 ```
 
-Commits 01–08 were verified and pushed by the user. Commit 09 adds real HTTP integration tests and a standalone local HTTP smoke test. The Gradle/JUnit suite remains the user's official verification gate; actual results are in `build/reports/tests/test/`.
+Commits 01–09 were verified in the user's environment. Commit 10 adds opt-in JMH and operational metrics; the Gradle/JUnit suite and JMH runner must still be verified in the user's WSL environment. Reports are written to `build/reports/tests/test/`.
 
 Expected recovery demo output:
 
@@ -275,13 +275,61 @@ Recovery follows these rules:
 
 Read [ADR 0009](docs/adr/0009-deterministic-replay-and-atomic-snapshots.md) and the [Commit 08 handoff](docs/COMMIT-08-HANDOFF.md).
 
+## Commit 10 — Observability and reproducible benchmarking
+
+The engine now exposes **process-local fixed-memory metrics** without recording
+per-order or per-client labels:
+
+```bash
+curl -sS http://127.0.0.1:8080/api/v1/metrics   # JSON counters and p50/p95/p99 bucket bounds
+curl -sS http://127.0.0.1:8080/metrics          # Prometheus plaintext exposition
+```
+
+The sequencer records admitted/completed commands, business rejections,
+full/closed inbox rejection counts, accepted writer reads, unexpected writer
+failures, and approximate **queue wait**, **processing**, and **admission to
+acknowledgement** latencies. HTTP counters track 2xx/4xx/5xx responses with
+whole-request latency histograms. Percentile values are **upper bounds of
+fixed nanosecond buckets**, not exact p99 measurements; Prometheus `_sum`
+and bucket boundaries are in seconds. No active memory grows with samples.
+Read [ADR 0011](docs/adr/0011-benchmark-boundaries-and-bounded-metrics.md)
+for interpretation and limitations.
+
+The **JMH 1.37 benchmark suite is isolated from ordinary tests**:
+
+```bash
+chmod +x scripts/run-jmh.sh
+./scripts/run-jmh.sh raw        # raw book + 500 deterministic commands/batch
+./scripts/run-jmh.sh sequencer  # 500 ordered, acknowledged commands/batch
+./scripts/run-jmh.sh buffered   # 100 commands/batch with OS-buffered journal
+./scripts/run-jmh.sh sync       # 100 commands/batch with forced command/decision
+```
+
+Raw JMH JSON, console logs, environment metadata and SHA-256 checksums are
+saved under the ignored `build/benchmarks/` directory. None of the numbers
+are invented or shipped as real measurements. JVM, storage and workload
+parameters must accompany every result. The journal benchmark includes file
+creation and cleanup, so it is **not** a pure fsync cost measurement. Run
+HTTP requests separately while the server is listening:
+
+```bash
+python3 scripts/bench_http.py --mode book --requests 40 --warmup 10 --pace-ms 250 \
+  --output build/benchmarks/http-book-1.json
+```
+
+This runner is **localhost-only**, respects the demo's request budget at its
+default pace, and records failures separately from successful round-trip
+latencies. Use IntelliJ [`http/05-metrics.http`](http/05-metrics.http) for
+manual inspection. Full instructions: [benchmark methodology](docs/benchmarks/README.md),
+[Commit 10 handoff](docs/COMMIT-10-HANDOFF.md).
+
 ## Current limitations
 
 - An unjournaled engine still loses its state after restart. `OS_BUFFERED` completion is not a power-failure durability promise. `SYNC_EACH_RECORD` calls `force(true)` before completion but hardware/filesystem guarantees still apply.
 - Full replay currently materializes the entire validated journal in memory; snapshot recovery still scans the entire journal for CRC and prefix verification. Snapshots accelerate **book reconstruction**, not yet initial full-file validation or constant-time startup. No journal compaction/rotation and no version migrations.
 - Snapshot SHA-256 guards against accidental corruption and cross-journal mixing, **not a malicious actor who can rewrite both file and hash**. The checkpoint's correctness assumes snapshots written by the trusted writer; an independent full replay remains the verification procedure.
 - A snapshot I/O error fail-stops the sequencer after the already-logged decision; callers with exceptional completions must treat outcomes as **ambiguous** and query recovered state rather than automatically resubmit a potentially duplicate ID.
-- The raw `LimitOrderBook` remains single-thread-owned; use the sequencer for concurrent admission. No SSE, JMH benchmark, controlled process-kill test, backup rotation, public authentication or production suitability. The CLI demo tests **normal close + restart**, not abrupt process death.
+- The raw `LimitOrderBook` remains single-thread-owned; use the sequencer for concurrent admission. No SSE, independently verified sustained performance claim, controlled process-kill test, backup rotation, public authentication or production suitability. The CLI demo tests **normal close + restart**, not abrupt process death.
 - `MANIFEST.sha256` is the historical Commit 01 starter-ZIP manifest, not a current rolling source-tree checksum.
 
 ## License

@@ -39,3 +39,28 @@ tasks.test {
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     }
 }
+
+
+// JMH is opt-in: regular `test` / `build` do not compile or execute benchmarks.
+// An isolated source set avoids overhead/dependencies in the core and HTTP server.
+val jmh by sourceSets.creating {
+    java.srcDir("src/jmh/java")
+    compileClasspath += sourceSets["main"].output
+    runtimeClasspath += sourceSets["main"].output
+}
+
+configurations[jmh.implementationConfigurationName].extendsFrom(configurations["implementation"])
+
+dependencies {
+    add(jmh.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")
+    add(jmh.annotationProcessorConfigurationName, "org.openjdk.jmh:jmh-generator-annprocess:1.37")
+}
+
+tasks.register<JavaExec>("jmh") {
+    group = "verification"
+    description = "Run isolated JMH benchmarks; pass JMH args via --args='...'."
+    dependsOn(tasks.named(jmh.classesTaskName))
+    mainClass.set("org.openjdk.jmh.Main")
+    classpath = jmh.runtimeClasspath
+    jvmArgs("-Dfile.encoding=UTF-8")
+}

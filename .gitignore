@@ -26,3 +26,6 @@ http/http-client.private.env.json
 
 # The genuine Gradle wrapper JAR is fetched and SHA-256 verified by gradlew
 # on first run. Do NOT ignore it: add it to the first Git commit.
+
+# Benchmarks are raw local machine evidence, never hardcoded portfolio claims.
+bench-results/

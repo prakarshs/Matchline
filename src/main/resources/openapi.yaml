@@ -164,6 +164,36 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
+  /api/v1/metrics:
+    get:
+      operationId: getMetricsJson
+      summary: Process-local, fixed-memory engine and HTTP metrics (JSON)
+      description: >-
+        Queue wait, command processing and acknowledgement histograms use fixed
+        nanosecond buckets; p50/p95/p99 are bucket upper bounds, not exact
+        latencies. Writer counters reset on demo reset. No raw request IDs
+        or access tokens are recorded. GETs are subject to HTTP rate limits.
+      responses:
+        '200':
+          description: Current in-memory counters and approximate histograms
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /metrics:
+    get:
+      operationId: getMetricsPrometheus
+      summary: Prometheus-compatible plaintext metrics
+      description: >-
+        Fixed metric names with no unbounded labels. Unauthenticated; subject
+        to the demo HTTP rate budget and strict CORS origin rules.
+      responses:
+        '200':
+          description: Prometheus text exposition 0.0.4
+          content:
+            text/plain:
+              schema: {type: string}
   /api/v1/recovery:
     get:
       operationId: getRecoveryState
