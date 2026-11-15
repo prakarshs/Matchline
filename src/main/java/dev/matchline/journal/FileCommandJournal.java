@@ -3,6 +3,8 @@ package dev.matchline.journal;
 import dev.matchline.domain.InstrumentId;
 import dev.matchline.domain.OrderCommand;
 import dev.matchline.sequencer.CommandDecision;
+import dev.matchline.recovery.JournalAnchor;
+import dev.matchline.recovery.JournalAnchors;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -36,6 +38,9 @@ public final class FileCommandJournal implements AutoCloseable {
     private static final int MIN_FRAME_PAYLOAD = 9;
 
     private final FileChannel channel;
+    private final Path path;
+    private final boolean reopened;
+    private final JournalScan existingScan;
     private final FileLock lock;
     private final InstrumentId instrument;
     private final DurabilityPolicy policy;
@@ -45,11 +50,18 @@ public final class FileCommandJournal implements AutoCloseable {
     private boolean claimed;
 
     private FileCommandJournal(FileChannel channel, FileLock lock, InstrumentId instrument,
-                               DurabilityPolicy policy) {
+                               DurabilityPolicy policy, Path path, boolean reopened, JournalScan existingScan) {
         this.channel = channel;
         this.lock = lock;
         this.instrument = instrument;
         this.policy = policy;
+        this.path = path.toAbsolutePath().normalize();
+        this.reopened = reopened;
+        this.existingScan = existingScan;
+        if (existingScan != null) {
+            this.committedSequence = existingScan.completedDecisionCount();
+            this.pendingSequence = existingScan.pendingCommandSequence();
+        }
     }
 
     /** Exclusively create a new journal; never overwrite an existing file. */
@@ -66,7 +78,7 @@ public final class FileCommandJournal implements AutoCloseable {
             try {
                 writeFully(channel, ByteBuffer.wrap(header(instrument)));
                 channel.force(true); // Header must survive before a command can be submitted.
-                return new FileCommandJournal(channel, lock, instrument, policy);
+                return new FileCommandJournal(channel, lock, instrument, policy, path, false, null);
             } catch (Throwable failure) {
                 lock.release();
                 throw failure;
@@ -78,6 +90,65 @@ public final class FileCommandJournal implements AutoCloseable {
         }
     }
 
+    /**
+     * Take the exclusive writer lock, validate the entire existing v1 journal,
+     * and seek its physical end. Never automatically repair a torn frame here.
+     * Run the explicit offline repair procedure before calling this method.
+     */
+    public static FileCommandJournal openExisting(Path path, InstrumentId instrument,
+                                                  DurabilityPolicy policy) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(instrument, "instrument");
+        Objects.requireNonNull(policy, "policy");
+        FileChannel channel = FileChannel.open(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        FileLock lock = null;
+        try {
+            try {
+                lock = channel.tryLock();
+            } catch (OverlappingFileLockException inProcess) {
+                throw new IOException("journal is already locked", inProcess);
+            }
+            if (lock == null) throw new IOException("journal is already locked");
+            JournalScan scan = scan(path, TailPolicy.STRICT);
+            if (!instrument.equals(scan.instrument())) throw new IOException("journal instrument mismatch");
+            channel.position(channel.size());
+            return new FileCommandJournal(channel, lock, instrument, policy, path, true, scan);
+        } catch (Throwable failure) {
+            try {
+                if (lock != null) lock.release();
+            } finally {
+                channel.close();
+            }
+            if (failure instanceof IOException io) throw io;
+            throw new IOException("cannot reopen journal", failure);
+        }
+    }
+
+    /** Validated contents captured under the exclusive recovery writer lock. */
+    public synchronized JournalScan existingScan() {
+        if (!reopened) throw new IllegalStateException("not an existing journal");
+        return existingScan;
+    }
+
+    public Path path() {
+        return path;
+    }
+
+    /** A recovered, validated journal can be claimed by one reconstructed writer. */
+    public synchronized void claimRecovered(InstrumentId expectedInstrument) {
+        if (!reopened || closed || claimed || !instrument.equals(expectedInstrument) || pendingSequence != 0) {
+            throw new IllegalArgumentException("journal is not recovered, resolved and unclaimed");
+        }
+        claimed = true;
+    }
+
+    /** Writer-only consistent checkpoint, after appending a completed DECISION. */
+    public synchronized JournalAnchor checkpoint() throws IOException {
+        ensureOpen();
+        if (pendingSequence != 0) throw new IOException("cannot snapshot with pending command");
+        return JournalAnchors.current(channel, committedSequence);
+    }
+
     public InstrumentId instrument() {
         return instrument;
     }
@@ -86,7 +157,7 @@ public final class FileCommandJournal implements AutoCloseable {
         return policy;
     }
 
-    /** Only a fresh journal can be attached before replay exists in Commit 08. */
+    /** Fresh journal for an empty book; recovered journals use claimRecovered. */
     public synchronized boolean fresh() {
         return !closed && committedSequence == 0 && pendingSequence == 0;
     }
@@ -94,7 +165,7 @@ public final class FileCommandJournal implements AutoCloseable {
     /** One journal may be attached to at most one sequencer instance. */
     public synchronized void claimFresh(InstrumentId expectedInstrument) {
         Objects.requireNonNull(expectedInstrument, "expectedInstrument");
-        if (claimed || !fresh() || !instrument.equals(expectedInstrument)) {
+        if (reopened || claimed || !fresh() || !instrument.equals(expectedInstrument)) {
             throw new IllegalArgumentException("journal must be fresh, unclaimed and match sequencer instrument");
         }
         claimed = true;

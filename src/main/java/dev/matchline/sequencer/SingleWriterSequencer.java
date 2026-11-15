@@ -1,23 +1,30 @@
 package dev.matchline.sequencer;
 
 import dev.matchline.book.LimitOrderBook;
+import dev.matchline.book.BookSnapshot;
 import dev.matchline.book.RestingOrderView;
-import dev.matchline.domain.CancelOrder;
-import dev.matchline.domain.CommandRejection;
 import dev.matchline.domain.InstrumentId;
 import dev.matchline.domain.OrderCommand;
 import dev.matchline.domain.OrderId;
 import dev.matchline.domain.OrderValidationException;
-import dev.matchline.domain.PlaceLimitOrder;
 import dev.matchline.domain.PriceTicks;
 import dev.matchline.domain.RejectionCode;
 import dev.matchline.domain.Side;
 import dev.matchline.journal.DurabilityPolicy;
 import dev.matchline.journal.FileCommandJournal;
+import dev.matchline.journal.JournalEntry;
+import dev.matchline.journal.JournalScan;
+import dev.matchline.recovery.JournalAnchor;
+import dev.matchline.recovery.JournalAnchors;
+import dev.matchline.recovery.SnapshotSchedule;
+import dev.matchline.recovery.SnapshotStore;
+import dev.matchline.recovery.RecoveryReport;
 
 import java.io.IOException;
 
 import java.time.Duration;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -41,7 +48,8 @@ import java.util.function.Supplier;
  * <p>Without a journal, completion remains volatile. With a fresh journal attached,
  * each command is appended before book mutation and each decision afterward.
  * SYNC_EACH_RECORD completion confirms both frames were forced to disk;
- * OS_BUFFERED completion does not. Recovery/replay is deferred to Commit 08.
+ * OS_BUFFERED completion does not. Recovery validates the journal, restores
+ * optional snapshots and resumes this same single-writer command path.
  * This is NOT a real exchange.
  *
  * <p>Completion callbacks may execute inline on the writer thread: NEVER do
@@ -58,6 +66,7 @@ public final class SingleWriterSequencer implements AutoCloseable {
     private final int capacity;
     private final Consumer<OrderCommand> beforeCommand;
     private final FileCommandJournal journal;
+    private final SnapshotSchedule snapshots;
     private final Thread writer;
     private volatile boolean accepting = true;
     private volatile long lastAdmittedSequence;
@@ -80,14 +89,119 @@ public final class SingleWriterSequencer implements AutoCloseable {
 
     /**
      * Attach a FRESH journal before any commands are admitted. The sequencer
-     * owns and closes this journal. Nonempty files cannot be attached until
-     * Commit 08 implements state reconstruction from the recorded history.
+     * owns and closes it. Existing files must use the static recover() factory.
      */
     public SingleWriterSequencer(InstrumentId instrument, int queueCapacity,
                                  int maxRestingOrders, int maxOrderIds,
                                  FileCommandJournal journal) {
         this(instrument, queueCapacity, maxRestingOrders, maxOrderIds,
                 ignored -> { }, Objects.requireNonNull(journal, "journal"));
+    }
+
+    /**
+     * Persist a full snapshot every N completed decisions on the writer thread.
+     * Opt-in: snapshot serialization/fsync can increase command latency.
+     * Snapshot file must not be the journal file, and its directory must exist.
+     */
+    public SingleWriterSequencer(InstrumentId instrument, int queueCapacity,
+                                 int maxRestingOrders, int maxOrderIds,
+                                 FileCommandJournal journal, SnapshotSchedule snapshots) {
+        this(new LimitOrderBook(instrument, maxRestingOrders, maxOrderIds), queueCapacity,
+                ignored -> { }, Objects.requireNonNull(journal, "journal"),
+                Objects.requireNonNull(snapshots, "snapshots"), 0L, false);
+    }
+
+    /**
+     * Reopen a journal, verify each historic decision against deterministic
+     * execution, optionally restore an anchored snapshot, resolve a single
+     * pending command, and only THEN start a writer accepting new commands.
+     * No implicit tail repair; a torn tail requires an explicit offline scan.
+     */
+    public static RecoveredSequencer recover(Path journalPath, InstrumentId instrument,
+                                             int queueCapacity, int maxRestingOrders, int maxOrderIds,
+                                             DurabilityPolicy policy, SnapshotSchedule snapshots)
+            throws IOException {
+        FileCommandJournal journal = FileCommandJournal.openExisting(journalPath, instrument, policy);
+        try {
+            checkSnapshotPath(snapshots, journal);
+            JournalScan scan = journal.existingScan();
+            long checkpoint = 0;
+            LimitOrderBook restored;
+            if (snapshots != null && Files.exists(snapshots.path())) {
+                SnapshotStore.Stored stored = SnapshotStore.read(snapshots.path());
+                BookSnapshot state = stored.state();
+                if (!state.instrument().equals(instrument)) {
+                    throw new IOException("snapshot instrument differs from journal");
+                }
+                JournalAnchor actual = JournalAnchors.atCompletedSequence(
+                        journalPath, scan, state.lastSequence());
+                if (!actual.equals(stored.anchor())) {
+                    throw new IOException("snapshot journal prefix/decision boundary mismatch");
+                }
+                try {
+                    restored = LimitOrderBook.restore(state, maxRestingOrders, maxOrderIds);
+                } catch (RuntimeException invalid) {
+                    throw new IOException("snapshot cannot be restored with supplied configuration", invalid);
+                }
+                checkpoint = state.lastSequence();
+            } else {
+                restored = new LimitOrderBook(instrument, maxRestingOrders, maxOrderIds);
+            }
+            List<JournalEntry> entries = scan.entries();
+            long replayed = 0;
+            for (long sequence = checkpoint + 1; sequence <= scan.completedDecisionCount(); sequence++) {
+                int index = Math.toIntExact(2L * (sequence - 1));
+                if (!(entries.get(index) instanceof JournalEntry.Command command)
+                        || !(entries.get(index + 1) instanceof JournalEntry.Decision recorded)) {
+                    throw new IOException("journal decision pair is missing at sequence " + sequence);
+                }
+                CommandDecision computed = CommandProcessor.apply(restored, command.command());
+                if (!computed.equals(recorded.decision())) {
+                    throw new IOException("replay decision differs from journal at sequence " + sequence);
+                }
+                replayed++;
+            }
+            boolean resolvedPending = scan.hasUnacknowledgedCommand();
+            long finalSequence = scan.completedDecisionCount();
+            if (resolvedPending) {
+                JournalEntry last = entries.get(entries.size() - 1);
+                if (!(last instanceof JournalEntry.Command pending)
+                        || pending.sequence() != finalSequence + 1) {
+                    throw new IOException("invalid final pending journal command");
+                }
+                // Previously applied volatile effects cannot survive a restart.
+                // Recompute from validated committed history, then append the
+                // missing decision once, BEFORE admitting fresh commands.
+                CommandDecision decision = CommandProcessor.apply(restored, pending.command());
+                journal.appendDecision(pending.sequence(), decision);
+                finalSequence = pending.sequence();
+            }
+            SingleWriterSequencer sequencer = new SingleWriterSequencer(restored, queueCapacity,
+                    ignored -> { }, journal, snapshots, finalSequence, true);
+            return new RecoveredSequencer(sequencer,
+                    new RecoveryReport(checkpoint, replayed, finalSequence, resolvedPending));
+        } catch (Throwable failed) {
+            try {
+                journal.close();
+            } catch (IOException closeFailure) {
+                failed.addSuppressed(closeFailure);
+            }
+            if (failed instanceof IOException io) throw io;
+            throw new IOException("journal recovery failed", failed);
+        }
+    }
+
+    private static void checkSnapshotPath(SnapshotSchedule schedule, FileCommandJournal journal)
+            throws IOException {
+        if (schedule == null) return;
+        Path snapshot = schedule.path().toAbsolutePath().normalize();
+        if (snapshot.equals(journal.path()) || (Files.exists(snapshot)
+                && Files.isSameFile(snapshot, journal.path()))) {
+            throw new IOException("snapshot path must not alias the journal path");
+        }
+        if (snapshot.getParent() == null || !Files.isDirectory(snapshot.getParent())) {
+            throw new IOException("snapshot parent directory must exist before startup");
+        }
     }
 
     // Package-private controlled scheduler hook for deterministic concurrency tests.
@@ -102,18 +216,42 @@ public final class SingleWriterSequencer implements AutoCloseable {
                                   int maxRestingOrders, int maxOrderIds,
                                   Consumer<OrderCommand> beforeCommand,
                                   FileCommandJournal journal) {
+        this(new LimitOrderBook(instrument, maxRestingOrders, maxOrderIds), queueCapacity,
+                beforeCommand, journal, null, 0L, false);
+    }
+
+    private SingleWriterSequencer(LimitOrderBook book, int queueCapacity,
+                                  Consumer<OrderCommand> beforeCommand,
+                                  FileCommandJournal journal, SnapshotSchedule snapshots,
+                                  long initialSequence, boolean recovered) {
         if (queueCapacity < 1 || queueCapacity > MAX_QUEUE_CAPACITY) {
             throw new IllegalArgumentException("queueCapacity must be 1.." + MAX_QUEUE_CAPACITY);
         }
-        this.book = new LimitOrderBook(Objects.requireNonNull(instrument, "instrument"),
-                maxRestingOrders, maxOrderIds);
-        if (journal != null) journal.claimFresh(instrument);
-        this.journal = journal;
+        this.book = Objects.requireNonNull(book, "book");
         this.beforeCommand = Objects.requireNonNull(beforeCommand, "beforeCommand");
+        if (snapshots != null && journal == null) {
+            throw new IllegalArgumentException("periodic snapshots require a journal");
+        }
+        if (journal != null) {
+            try {
+                checkSnapshotPath(snapshots, journal);
+            } catch (IOException io) {
+                throw new IllegalArgumentException("snapshot path conflicts with journal", io);
+            }
+            if (!recovered && snapshots != null && Files.exists(snapshots.path())) {
+                throw new IllegalArgumentException("fresh journal must not overwrite an existing snapshot");
+            }
+            if (recovered) journal.claimRecovered(book.instrument());
+            else journal.claimFresh(book.instrument());
+        }
+        this.journal = journal;
+        this.snapshots = snapshots;
         this.capacity = queueCapacity;
         this.queue = new ArrayBlockingQueue<>(queueCapacity);
+        this.lastAdmittedSequence = initialSequence;
+        this.lastProcessedSequence = initialSequence;
         this.writer = Thread.ofPlatform()
-                .name("matchline-writer-" + instrument.value())
+                .name("matchline-writer-" + book.instrument().value())
                 .daemon(true)
                 .start(this::runWriter);
     }
@@ -164,6 +302,11 @@ public final class SingleWriterSequencer implements AutoCloseable {
                 book.restingOrderCount(), book.acceptedOrderIdCount(),
                 book.depth(Side.BUY, depthLevels), book.depth(Side.SELL, depthLevels),
                 book.bestOrder(Side.BUY), book.bestOrder(Side.SELL)));
+    }
+
+    /** Detached complete state including accepted-ID history, read after earlier admitted work. */
+    public CompletableFuture<BookSnapshot> snapshotState() {
+        return submitRead(() -> book.snapshot(lastProcessedSequence));
     }
 
     /** Consistent immutable FIFO views at one exact price, on the writer. */
@@ -320,22 +463,16 @@ public final class SingleWriterSequencer implements AutoCloseable {
         // A crash after this append but before decision append is an AMBIGUOUS
         // outcome; it is deliberately NOT reported as a successful completion.
         if (journal != null) journal.appendCommand(work.sequence(), work.command());
-        CommandDecision decision;
-        try {
-            if (work.command() instanceof PlaceLimitOrder place) {
-                decision = new CommandDecision.Placed(book.executeLimit(place));
-            } else if (work.command() instanceof CancelOrder cancel) {
-                decision = new CommandDecision.Cancelled(book.cancel(cancel));
-            } else {
-                throw new IllegalStateException("unrecognized sealed OrderCommand type");
-            }
-        } catch (OrderValidationException rejected) {
-            decision = new CommandDecision.Rejected(CommandRejection.fromValidation(rejected));
-        }
+        CommandDecision decision = CommandProcessor.apply(book, work.command());
         // Synchronous mode forces the outcome before the public completion.
         // An append/force failure after mutation FAIL-STOPS this writer.
         if (journal != null) journal.appendDecision(work.sequence(), decision);
         lastProcessedSequence = work.sequence();
+        if (snapshots != null && work.sequence() % snapshots.everyDecisions() == 0) {
+            // Snapshot follows the committed decision. If persistence fails the
+            // writer fail-stops; the journal remains the recovery authority.
+            SnapshotStore.writeAtomically(snapshots.path(), book.snapshot(work.sequence()), journal.checkpoint());
+        }
         work.completion().complete(new SequencedResult(work.sequence(), work.command(), decision));
     }
 

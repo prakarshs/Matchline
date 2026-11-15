@@ -3,6 +3,7 @@ package dev.matchline.book;
 import dev.matchline.domain.CancelOrder;
 import dev.matchline.domain.InstrumentId;
 import dev.matchline.domain.OrderId;
+import dev.matchline.domain.OrderQuantity;
 import dev.matchline.domain.OrderValidationException;
 import dev.matchline.domain.PlaceLimitOrder;
 import dev.matchline.domain.PriceTicks;
@@ -89,6 +90,68 @@ public final class LimitOrderBook {
     /** Count of accepted placement IDs in this book instance's lifetime. */
     public int acceptedOrderIdCount() {
         return usedOrderIds.size();
+    }
+
+    /** Detached complete state, safe to capture ONLY on the owning writer. */
+    public BookSnapshot snapshot(long completedSequence) {
+        if (completedSequence < 0) throw new IllegalArgumentException("negative completed sequence");
+        List<OrderId> ids = new ArrayList<>(usedOrderIds);
+        ids.sort(Comparator.comparing(OrderId::value));
+        List<RestingOrderView> orders = new ArrayList<>(byId.size());
+        for (RestingOrder order : byId.values()) orders.add(order.view());
+        orders.sort(Comparator.comparingLong(RestingOrderView::insertionOrdinal));
+        return new BookSnapshot(instrument, completedSequence, maxRestingOrders, maxOrderIds,
+                insertionOrdinal, ids, orders);
+    }
+
+    /**
+     * Restore every index and historical identifier with original FIFO ordinals.
+     * Never call addResting here: it allocates NEW ordinals and changes priority.
+     * A failed validation cannot expose a partially initialized book.
+     */
+    public static LimitOrderBook restore(BookSnapshot state, int maxRestingOrders, int maxOrderIds) {
+        Objects.requireNonNull(state, "state");
+        if (state.maxRestingOrders() != maxRestingOrders || state.maxOrderIds() != maxOrderIds) {
+            throw new IllegalArgumentException("snapshot capacity configuration differs from engine");
+        }
+        LimitOrderBook restored = new LimitOrderBook(state.instrument(), maxRestingOrders, maxOrderIds);
+        String lastId = null;
+        for (OrderId id : state.acceptedOrderIds()) {
+            if (lastId != null && lastId.compareTo(id.value()) >= 0) {
+                throw new IllegalArgumentException("snapshot accepted IDs must be strictly sorted");
+            }
+            if (!restored.usedOrderIds.add(id)) {
+                throw new IllegalArgumentException("duplicate snapshot order ID");
+            }
+            lastId = id.value();
+        }
+        long lastOrdinal = 0;
+        for (RestingOrderView view : state.restingOrders()) {
+            if (view.insertionOrdinal() <= lastOrdinal
+                    || view.insertionOrdinal() > state.lastInsertionOrdinal()) {
+                throw new IllegalArgumentException("snapshot FIFO ordinals are invalid");
+            }
+            lastOrdinal = view.insertionOrdinal();
+            if (!restored.usedOrderIds.contains(view.orderId())
+                    || restored.byId.containsKey(view.orderId())) {
+                throw new IllegalArgumentException("resting order must have a distinct accepted ID");
+            }
+            // Enforce the same domain bounds as new incoming commands.
+            PlaceLimitOrder original = new PlaceLimitOrder(state.instrument(), view.orderId(), view.side(),
+                    view.price(), new OrderQuantity(view.originalQuantity()));
+            NavigableMap<PriceTicks, PriceLevel> levels = restored.levelsFor(view.side());
+            PriceLevel level = levels.computeIfAbsent(view.price(), ignored -> new PriceLevel());
+            level.totalQuantity = Math.addExact(level.totalQuantity, view.remainingQuantity());
+            RestingOrder order = new RestingOrder(original, level, view.remainingQuantity(), view.insertionOrdinal());
+            level.orders.put(view.orderId(), order);
+            restored.byId.put(view.orderId(), order);
+        }
+        if (!restored.bids.isEmpty() && !restored.asks.isEmpty()
+                && Side.BUY.crosses(restored.bids.firstKey(), restored.asks.firstKey())) {
+            throw new IllegalArgumentException("snapshot contains crossed resting sides");
+        }
+        restored.insertionOrdinal = state.lastInsertionOrdinal();
+        return restored;
     }
 
     public int priceLevelCount(Side side) {

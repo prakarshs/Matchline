@@ -4,7 +4,7 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 07 / append-only versioned command/outcome journal.** The Java 21 matching core, cancellation, bounded single-writer ingress and optional file journaling are implemented. Replay-based restoration, snapshots, HTTP and the browser demo remain future increments. Journal crash durability depends on the configured force policy; see ADR 0008.
+> **Status: Commit 08 / deterministic restart and versioned snapshots.** The Java 21 matching core, cancellation, bounded ingress, append-only journal, deterministic decision-checked replay and optional periodic atomic snapshots are implemented. HTTP, benchmarks and the browser demo remain future increments. Replaying a file after a normal close is **not** proof of power-loss durability; see ADRs 0008–0009.
 
 ## Canonical development environment
 
@@ -25,6 +25,7 @@ chmod +x ./gradlew
 ./gradlew clean test
 ./gradlew run --args='--self-check'
 ./gradlew run --args='--version'
+./gradlew run --args='--recovery-demo'
 ./gradlew installDist
 ./build/install/matchline/bin/matchline --self-check
 ```
@@ -36,9 +37,16 @@ MATCHLINE BOOTSTRAP OK | Java 21
 matching=true http=false journal=true
 ```
 
-After Commit 07, the 150 prior test invocations (reported by the user as passing after Commit 06) are supplemented by the new journal tests. This document does not claim those tests passed in the user's WSL until the user runs Gradle. Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
+Commit 07 passed in the user's environment after correcting the journal-tail test assertion. Commit 08 adds 28 JUnit test methods, including full-vs-snapshot model equivalence, corruption and pending-command recovery. Java 21 compilation, 28 local assertion-harness invocations and the CLI recovery drill have passed in the artifact-generation sandbox. The full Gradle/JUnit suite requires user verification; Gradle reports actual results under `build/reports/tests/test/`.
 
-There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 07.
+Expected recovery demo output:
+
+```text
+MATCHLINE RECOVERY OK | commands=6 snapshot=4 suffix=2 full=6 state_equal=true
+This is a normal-close replay demonstration; no abrupt crash or fsync guarantee was tested.
+```
+
+There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 08.
 
 ## Docker smoke test (optional)
 
@@ -48,7 +56,7 @@ docker compose --profile smoke run --build --rm matchline-smoke
 
 The container builds the app, prints the same bootstrap OK message and exits successfully. It is **not** intended to stay running.
 
-## Architecture (target, not present implementation)
+## Architecture (current core and future HTTP ingress)
 
 ```mermaid
 flowchart LR
@@ -60,9 +68,9 @@ flowchart LR
   E --> G[Replay and recovery]
 ```
 
-Current separation: core Java code holds matching rules; a sequenced writer can optionally append binary journal frames to disk. A forced disk write adds I/O to the command path by design. HTTP and recovery snapshots are future work.
+Current separation: Java core holds matching rules; the sequenced writer records journal frames and optionally persists state snapshots. Restart reconstructs book state and historical IDs from validated journal records, optionally accelerated by a snapshot. HTTP ingress remains a future increment.
 
-For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-07-HANDOFF.md`](docs/COMMIT-07-HANDOFF.md).
+For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-08-HANDOFF.md`](docs/COMMIT-08-HANDOFF.md).
 
 ## Current domain contract and limitations
 
@@ -70,7 +78,7 @@ For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) a
 - Instrument: 1–12 ASCII uppercase characters, starting A–Z; IDs: 1–64 ASCII characters, starting alphanumeric. Neither is normalized. The planned initial instrument is `DEMO`.
 - Price: whole ticks from **1 to 1,000,000,000**; new-order quantity: **1 to 1,000,000**. Invalid inputs fail fast with machine-readable rejection codes. No floating-point arithmetic.
 - Maximum **per-order** abstract tick-notional is `10^15`; it is not a currency amount. Totals across orders must still be checked.
-- The book rejects **all previously accepted** placement IDs within the same book instance, including fully executed/cancelled IDs. ID history is capped at 1,000,000 accepted orders by default (configurable to 2,000,000 maximum); accepted placement commands are journaled when enabled, but restoring the ID history waits for Commit 08. Unknown or previously completed cancel targets reject with `ORDER_NOT_FOUND`. See [ADR 0006](docs/adr/0006-cancellation-id-history-and-amend-policy.md).
+- The book rejects **all previously accepted** placement IDs within the same book instance, including fully executed/cancelled IDs. ID history is capped at 1,000,000 accepted orders by default (configurable to 2,000,000 maximum); accepted placement commands are journaled when enabled, and replay/snapshot restore the entire ID history. Unknown or previously completed cancel targets reject with `ORDER_NOT_FOUND`. See [ADR 0006](docs/adr/0006-cancellation-id-history-and-amend-policy.md).
 
 ## Current in-memory matching book (Commits 03–05)
 
@@ -137,7 +145,7 @@ and lifecycle semantics.
 
 ## Append-only file journal (Commit 07)
 
-The journal is optional, explicit and attached **only to a new empty book**. Create a parent directory outside the Git repository or under the ignored `local-data/` directory:
+The journal is optional and explicit. `createNew` still attaches only to a new empty book; `SingleWriterSequencer.recover` handles a populated journal after deterministic restoration. Create a parent directory outside the Git repository or under the ignored `local-data/` directory:
 
 ```java
 import dev.matchline.journal.*;
@@ -158,15 +166,65 @@ JournalScan scan = FileCommandJournal.scan(
 
 `createNew` never overwrites an existing file. `SYNC_EACH_RECORD` forces the command record **before** matching and forces its outcome **before** completing the future. `OS_BUFFERED` is faster in principle but does **not** promise crash durability. In either mode, the admission ticket is not a durable acknowledgement. CRC32C protects every record against accidental corruption. A complete bad-CRC frame is always fatal. Offline `TRUNCATE_INCOMPLETE_TAIL` can explicitly discard just a partially written final frame; the remaining `Command` (if any) is reported as **pending/ambiguous**. Never invoke offline repair while the writer is running. Read [ADR 0008](docs/adr/0008-versioned-journal-and-durability.md) before interpreting crash outcomes.
 
-**There is deliberately no restore-from-existing-journal path yet.** Reopening an old journal into a new empty book would be unsafe: replay and state equivalence are Commit 08. Do not delete/overwrite an old journal just to restart. The journal is an append-only single-file development format; full recovery, compaction and version migrations are not present.
+To restart an existing journal, **never** use `createNew` or the original fresh-book constructor. Use the recovery API below. The journal remains a single-file development format with no compaction, rotation or schema migration.
+
+## Deterministic restart and periodic snapshots (Commit 08)
+
+Snapshot files use a separate `MLS1` version-1 format. They contain **all** accepted order IDs (including filled/cancelled), currently resting original and remaining quantities, FIFO insertion ordinals, and an exact completed command-sequence boundary. Every snapshot carries a SHA-256 integrity trailer and an independent SHA-256 hash of the exact matching journal prefix, plus its byte offset. The journal remains the source of truth: matching the prefix hash does not bypass validated journal framing and CRCs.
+
+Example integration in Java (create the `local-data` directory first):
+
+```java
+import dev.matchline.domain.InstrumentId;
+import dev.matchline.journal.*;
+import dev.matchline.recovery.*;
+import dev.matchline.sequencer.*;
+import java.nio.file.Path;
+
+var symbol = new InstrumentId("DEMO");
+var journalFile = Path.of("local-data/demo.mlj");
+var snapshots = new SnapshotSchedule(Path.of("local-data/demo.mls"), 1_000);
+
+// FIRST START ONLY: choose new file names, and close the writer before restart.
+var journal = FileCommandJournal.createNew(
+        journalFile, symbol, DurabilityPolicy.SYNC_EACH_RECORD);
+try (var engine = new SingleWriterSequencer(symbol, 1_024,
+        50_000, 1_000_000, journal, snapshots)) {
+    // Submit PlaceLimitOrder / CancelOrder; await completion stages.
+    // Every 1,000 completed decisions, an atomic snapshot is written.
+}
+
+// SUBSEQUENT RESTARTS: reopen the same journal, validating records and snapshot.
+try (RecoveredSequencer restored = SingleWriterSequencer.recover(
+        journalFile, symbol, 1_024, 50_000, 1_000_000,
+        DurabilityPolicy.SYNC_EACH_RECORD, snapshots)) {
+    System.out.println(restored.report());
+    var completeState = restored.sequencer().snapshotState().join();
+    // New admission sequences continue from last recovered sequence + 1.
+}
+```
+
+Use `snapshots = null` on `recover` to replay the **entire** valid journal, ignoring any snapshot file. This provides an independent comparison path. `snapshotState()` is a detached **in-memory** state capture, not a disk write. The periodic snapshot runs synchronously on the book's writer thread, so its serialization, SHA-256 prefix hashing, disk writes and atomic rename add latency; the default engine has **no automatic snapshots** until enabled.
+
+Recovery follows these rules:
+
+- Exclusive journal lock, strict full-frame/CRC scan, compatible symbol and journal v1 format. Failure aborts startup; there is no skip-ahead over corruption.
+- Optional snapshot must validate its own checksum, correct capacity configuration and matching completed-decision SHA-256 journal prefix. A bad snapshot **fails startup** rather than silently falling back.
+- For every completed command after the checkpoint, the exact same matching/cancel code recomputes the result; any mismatch with the persisted decision aborts recovery.
+- A final unmatched `COMMAND` is **not an old successful acknowledgement**. Recovery computes its outcome from verified state, appends the corresponding decision and then admits new commands. Report `resolvedPendingCommand=true` tells you that a caller may not have observed this decision before the previous process stopped.
+- An incomplete final frame requires explicit **offline** repair via `scan(journalFile, TRUNCATE_INCOMPLETE_TAIL)` before retrying recovery. A complete bad-CRC frame cannot be repaired automatically. Repair is destructive: preserve a copy for forensics first.
+- The original `maxRestingOrders` and `maxOrderIds` configuration must be reused. Fresh journals refuse an already-existing snapshot at the configured path, preventing accidental overwrite of an older epoch.
+
+Read [ADR 0009](docs/adr/0009-deterministic-replay-and-atomic-snapshots.md) and the [Commit 08 handoff](docs/COMMIT-08-HANDOFF.md).
 
 ## Current limitations
 
-- The volatile sequencer mode still loses data on crash. The synchronous journal writes durable command/outcome frames, but Commit 08 must reconstruct state and resolve incomplete command/outcome pairs after restart.
-- No HTTP API, SSE, journal replay, recovery snapshot or benchmark. Reapplying an identical in-memory list in a test is NOT crash recovery.
-- The raw `LimitOrderBook` remains single-thread-owned and unsafe for direct concurrent callers. Use `SingleWriterSequencer` for concurrent admission and owner-thread read access. The CLI has a self-check, not an interactive order-placement interface.
-- No production suitability, deployment URL, latency number or throughput claim.
-- Initial dependency downloads require internet access. `MANIFEST.sha256` is the historical **Commit 01 bootstrap ZIP** integrity manifest, not a rolling source-tree digest.
+- An unjournaled engine still loses its state after restart. `OS_BUFFERED` completion is not a power-failure durability promise. `SYNC_EACH_RECORD` calls `force(true)` before completion but hardware/filesystem guarantees still apply.
+- Full replay currently materializes the entire validated journal in memory; snapshot recovery still scans the entire journal for CRC and prefix verification. Snapshots accelerate **book reconstruction**, not yet initial full-file validation or constant-time startup. No journal compaction/rotation and no version migrations.
+- Snapshot SHA-256 guards against accidental corruption and cross-journal mixing, **not a malicious actor who can rewrite both file and hash**. The checkpoint's correctness assumes snapshots written by the trusted writer; an independent full replay remains the verification procedure.
+- A snapshot I/O error fail-stops the sequencer after the already-logged decision; callers with exceptional completions must treat outcomes as **ambiguous** and query recovered state rather than automatically resubmit a potentially duplicate ID.
+- The raw `LimitOrderBook` remains single-thread-owned; use the sequencer for concurrent admission. No HTTP API, SSE, JMH benchmark, controlled process-kill test, backup rotation, or production suitability. The CLI demo tests **normal close + restart**, not abrupt process death.
+- `MANIFEST.sha256` is the historical Commit 01 starter-ZIP manifest, not a current rolling source-tree checksum.
 
 ## License
 

@@ -36,10 +36,11 @@ public final class MatchlineApplication {
         return switch (option) {
             case "--help" -> {
                 out.println("MATCHLINE | deterministic exchange simulator | Java core");
-                out.println("Usage: matchline [--help | --version | --self-check]");
+                out.println("Usage: matchline [--help | --version | --self-check | --recovery-demo]");
                 out.println("Matching and optional file journaling: Java API only. No CLI order entry or HTTP service.");
                 yield 0;
             }
+            case "--recovery-demo" -> RecoveryDrill.run(out, err);
             case "--version" -> {
                 out.println(status.application() + " " + status.version());
                 yield 0;

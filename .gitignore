@@ -15,11 +15,13 @@ out/
 Thumbs.db
 *~
 
-# Local runtime data and credentials (for later commits)
+# Local runtime data, recovery artifacts, and credentials
 .env
 .env.*
 !.env.example
 local-data/
+*.mlj
+*.mls
 
 # The genuine Gradle wrapper JAR is fetched and SHA-256 verified by gradlew
 # on first run. Do NOT ignore it: add it to the first Git commit.
