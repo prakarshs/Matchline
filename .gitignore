@@ -1,0 +1,25 @@
+# Gradle / JVM build outputs
+.gradle/
+build/
+out/
+*.class
+*.log
+
+# IDE state: use Gradle to import the project
+.idea/
+*.iml
+.vscode/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+*~
+
+# Local runtime data and credentials (for later commits)
+.env
+.env.*
+!.env.example
+local-data/
+
+# The genuine Gradle wrapper JAR is fetched and SHA-256 verified by gradlew
+# on first run. Do NOT ignore it: add it to the first Git commit.

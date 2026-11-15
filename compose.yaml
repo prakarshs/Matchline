@@ -1,0 +1,11 @@
+# Only a build/runtime smoke test. No listener or exposed port in Commit 01.
+services:
+  matchline-smoke:
+    profiles: ["smoke"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    command: ["--self-check"]
