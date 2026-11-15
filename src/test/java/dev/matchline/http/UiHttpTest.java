@@ -60,13 +60,16 @@ class UiHttpTest {
         }
     }
 
-    @Test void onlyPreviewPermitsExplicitPortfolioEmbedding() throws Exception {
+    @Test void onlyPreviewPermitsEmbeddingInLocalMode() throws Exception {
         try (var server = new MatchlineHttpServer(config(PORTFOLIO))) {
             server.start();
             String preview = get(server, "/preview/").headers()
                     .firstValue("content-security-policy").orElseThrow();
             assertTrue(preview.contains("frame-ancestors " + PORTFOLIO));
             assertFalse(preview.contains("'unsafe-inline'"));
+            String embed = get(server, "/embed/").headers()
+                    .firstValue("content-security-policy").orElseThrow();
+            assertTrue(embed.contains("frame-ancestors 'none'")); // public demo required for interactive framing
             String lab = get(server, "/lab/").headers()
                     .firstValue("content-security-policy").orElseThrow();
             assertTrue(lab.contains("frame-ancestors 'none'"));
@@ -88,7 +91,7 @@ class UiHttpTest {
                 assertTrue(asset.headers().firstValue("content-security-policy").orElseThrow()
                         .contains("script-src 'self'"));
             }
-            assertTrue(get(server,"/ui/app.mjs").body().contains("/api/v1/book"));
+            assertTrue(get(server,"/ui/app.mjs").body().contains("/api/v1/dashboard"));
             assertTrue(get(server,"/ui/app.css").body().contains(".preview-shell"));
         }
     }

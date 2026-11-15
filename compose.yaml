@@ -17,10 +17,26 @@ services:
     read_only: true
     security_opt:
       - no-new-privileges:true
-    command: ["--serve"]
     environment:
       MATCHLINE_HTTP_HOST: 0.0.0.0
       MATCHLINE_HTTP_PORT: 8080
     ports:
       - "127.0.0.1:8080:8080"
-# This example API is volatile, with no reset token and no cross-origin access.
+    # Local API uses the original single shared book. Do not publish it directly.
+
+  matchline-public-demo:
+    profiles: ["public-demo"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MATCHLINE_HTTP_HOST: 0.0.0.0
+      MATCHLINE_HTTP_PORT: 8080
+      MATCHLINE_PUBLIC_DEMO: "true"
+      MATCHLINE_EMBED_ORIGIN: ${MATCHLINE_EMBED_ORIGIN:-}
+    ports:
+      - "127.0.0.1:${MATCHLINE_PUBLIC_HOST_PORT:-8081}:8080"
+    # Public-demo profile runs locally at 8081 with isolated ephemeral sessions.

@@ -13,6 +13,8 @@ final class UiAssets {
     private static final Map<String, Asset> ASSETS = Map.of(
             "/lab", new Asset("/ui/lab.html", "text/html; charset=utf-8", false),
             "/lab/", new Asset("/ui/lab.html", "text/html; charset=utf-8", false),
+            "/embed", new Asset("/ui/lab.html", "text/html; charset=utf-8", true),
+            "/embed/", new Asset("/ui/lab.html", "text/html; charset=utf-8", true),
             "/preview", new Asset("/ui/preview.html", "text/html; charset=utf-8", true),
             "/preview/", new Asset("/ui/preview.html", "text/html; charset=utf-8", true),
             "/ui/app.css", new Asset("/ui/app.css", "text/css; charset=utf-8", false),
@@ -26,12 +28,13 @@ final class UiAssets {
         return ASSETS.containsKey(path);
     }
 
-    static void send(HttpExchange exchange, String path, String embedOrigin) throws IOException {
+    static void send(HttpExchange exchange, String path, String embedOrigin, boolean publicDemo) throws IOException {
         Asset asset = ASSETS.get(path);
         if (asset == null) throw new IllegalArgumentException("not an allowlisted UI asset");
         // Script/style/connect sources must all be this Java service. Frame permission is
-        // intentionally narrower than CORS; only the preview page is embeddable.
+        // intentionally narrower than CORS; only /preview and /embed are embeddable.
         String ancestors = asset.preview() && embedOrigin != null
+                && (!path.startsWith("/embed") || publicDemo)
                 ? embedOrigin : "'none'";
         exchange.getResponseHeaders().set("Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "

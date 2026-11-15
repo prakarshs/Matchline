@@ -1,0 +1,68 @@
+name: Matchline verification
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify wrapper checksum and run Gradle tests
+        run: |
+          chmod +x ./gradlew
+          ./gradlew clean test installDist --no-daemon --max-workers=1 --console=plain
+      - name: Browser logic tests
+        run: node --test ui/tests/*.test.mjs
+      - name: Verify packaged application starts
+        run: |
+          ./build/install/matchline/bin/matchline --self-check
+          ./build/install/matchline/bin/matchline --recovery-demo
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-test-results
+          path: build/test-results/test/
+          if-no-files-found: ignore
+          retention-days: 7
+  docker:
+    runs-on: ubuntu-24.04
+    needs: verify
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Container build and smoke
+        run: |
+          docker build -t matchline:ci .
+          docker run --rm matchline:ci --self-check
+      - name: Start isolated public demo and probe readiness
+        run: |
+          docker run -d --name matchline-ci --read-only \
+            --security-opt no-new-privileges --memory 512m \
+            -p 127.0.0.1:18080:8080 \
+            -e MATCHLINE_PUBLIC_DEMO=true matchline:ci
+          trap 'docker logs matchline-ci || true; docker rm -f matchline-ci || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18080/api/v1/health; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/api/v1/health
+          curl -fsS http://127.0.0.1:18080/lab >/dev/null
+          curl -fsS http://127.0.0.1:18080/preview >/dev/null
+          curl -fsS http://127.0.0.1:18080/embed >/dev/null
+          curl -fsS -X POST http://127.0.0.1:18080/api/v1/session

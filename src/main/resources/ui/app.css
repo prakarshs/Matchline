@@ -278,3 +278,19 @@ to{opacity:1;transform:translateY(0)}
 
 .action-button.sell-action{background:#e8998f;border-color:#e8998f;color:#281817}
 .action-button.sell-action:hover:not(:disabled){background:#f5b5a8}
+
+/* Compact, same-origin Java lab for the portfolio's existing demo-window iframe. */
+html.embedded-lab .site-header,
+html.embedded-lab .hero,
+html.embedded-lab .site-footer,
+html.embedded-lab .ambient-grid { display: none !important; }
+html.embedded-lab .workspace-section { padding-top: 16px; }
+html.embedded-lab .shell { width: min(100% - 24px, 1100px); }
+html.embedded-lab .scenarios-section,
+html.embedded-lab .internals-section { margin-top: 28px; }
+html.embedded-lab .section-heading h2 { font-size: clamp(25px, 3vw, 34px); }
+html.embedded-lab .terminal-grid { gap: 10px; }
+@media (max-width: 740px) {
+  html.embedded-lab .shell { width: calc(100% - 18px); }
+  html.embedded-lab .workspace-section { padding-top: 10px; }
+}

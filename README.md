@@ -4,7 +4,60 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 11 / interactive laboratory delivered for browser verification.** The Java 21 matching engine, single-writer ingress, journal/replay/snapshots, HTTP adapter, JMH harness and operational metrics are implemented. The full browser lab and read-only preview now use the real HTTP engine; visual browser testing, actual JMH measurements, hardened public ingress and hosting remain user verification/release work. This is an exchange **simulator**, never real trading infrastructure.
+> **Status: Commit 12 / release candidate awaiting user verification.** The Java 21 matching core, single-writer sequencing, journal/replay/snapshots, HTTP API, JMH harness, operational metrics, full lab and read-only preview are implemented. This increment adds bounded public-demo sessions, a portfolio embed, CI and a free-tier container deployment runbook. The user's Commit 11 screenshot confirms a functioning local browser view; the full Commit 12 Gradle/CI/Docker/deployment gates and actual JMH measurements are **not yet verified**. This is an exchange **simulator**, never real trading infrastructure.
+
+## Commit 12 — safe public-demo release candidate
+
+**Two explicitly different runtime modes:**
+
+1. **Local** (default): loopback `127.0.0.1:8080`, single shared DEMO book,
+   optional on-disk journaling, snapshot recovery, and opt-in bearer-token
+   reset. All previously supported HTTP endpoints remain available without
+   a session token; do not expose this mode publicly.
+2. **Public** (`MATCHLINE_PUBLIC_DEMO=true`): a maximum of **12** independent,
+   process-local synthetic books, each with its own sequencer, FIFO order
+   history, trades, 500 resting-order slots, 3,000 ID slots, and a bounded
+   ingress queue. Each browser obtains an unguessable 43-character capability
+   token using `POST /api/v1/session` and passes it in
+   `X-Matchline-Session`; expiry is 20 minutes of inactivity. This is an
+   isolated *demo*, not user authentication or a durable exchange.
+
+In public mode, `/preview` starts with an explicitly synthetic order sample
+submitted through the **real Java writer**. It contains actual book levels
+and one actual sample trade, but no button to place/cancel. `/embed` serves a
+compact **interactive** version of `/lab` with real orders and decisions.
+The full `/lab` remains non-embeddable. With one exact configured
+`MATCHLINE_EMBED_ORIGIN`, only `/preview` and `/embed` may be framed.
+The client uses `sessionStorage` with a safe in-memory fallback instead of
+third-party cookies. `GET /api/v1/dashboard` combines one writer-ordered
+book read and process-local tapes/metrics to reduce polling costs; all old
+individual GET APIs remain available.
+
+**Nothing is hosted yet.** See [deployment runbook](docs/DEPLOY_RENDER_CLOUDFLARE.md),
+[release checklist](docs/RELEASE_CHECKLIST.md), [security boundaries](docs/SECURITY.md),
+[ADR 0013](docs/adr/0013-ephemeral-isolated-public-demo.md), and
+[Commit 12 handoff](docs/COMMIT-12-HANDOFF.md). Optional Render Blueprint:
+[`render.yaml`](render.yaml). GitHub Actions workflow:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+Start public mode locally (in WSL, not exposed on a public IP):
+
+```bash
+MATCHLINE_PUBLIC_DEMO=true MATCHLINE_HTTP_PORT=8081 \
+MATCHLINE_EMBED_ORIGIN=https://your-real-portfolio.pages.dev \
+./gradlew run --args='--serve' --no-daemon --max-workers=1 --console=plain
+# In another terminal:
+curl -sS -X POST http://127.0.0.1:8081/api/v1/session
+```
+
+Open `http://127.0.0.1:8081/lab`, `/preview` and `/embed` to exercise the
+actual browser. Public reset/journaling/CORS settings are rejected at startup.
+Cloud hosting must use HTTPS and the assigned `PORT`, and a single instance;
+Render Free's ephemeral filesystem means all session state disappears on
+process restart or idle spin-down. No fabricated uptime or benchmark claims. A user-verified 40-request
+localhost HTTP book-read baseline is documented in
+[HTTP benchmark evidence](docs/benchmarks/HTTP-BOOK-BASELINE-2026-11-15.md);
+raw JMH throughput remains unreported.
 
 ## Interactive Exchange Laboratory (Commit 11)
 
@@ -13,11 +66,12 @@ With the real HTTP server running (`./gradlew run --args='--serve' --no-daemon -
 - **Full lab:** <http://127.0.0.1:8080/lab> — place/cancel orders, inspect bid/ask depth, executions, recent commands, metrics and recovery state; step through three deterministic command *scripts*.
 - **Compact read-only preview:** <http://127.0.0.1:8080/preview> — a responsive, continuously refreshed slice of the **same server** for later portfolio embedding.
 
-Both are served as classpath resources from the Java 21 server; there is no frontend build, CDN, separate JavaScript matching engine, or cross-origin API configuration. The UI polls the real book and process-local tapes every four seconds (five seconds in preview). Pausing an inactive tab reduces requests; the server's existing global rate budget still applies. All user-visible fills and command outcomes come from the HTTP server.
+Both are served as classpath resources from the Java 21 server; there is no frontend build, CDN, separate JavaScript matching engine, or cross-origin API configuration. The Commit 12 UI uses one combined dashboard request every four seconds (five seconds in preview). Pausing an inactive tab reduces requests; the server's existing global rate budget still applies. All user-visible fills and command outcomes come from the HTTP server.
 
-**Scenario caveat:** demo scripts place real orders into the *current* book. They do not reset it or guarantee isolation from other users/orders. Run the experiments against a fresh volatile session for a controlled narrative; click each step separately and inspect the actual decision. The preview is read-only. The recovery panel displays startup verification metadata, not an on-demand replay endpoint. Recent trade/event tapes are process-local; a restart does not restore those tapes, even when the book is journal-recovered.
+**Scenario caveat:** demo scripts place real orders into the *current* book. They do not reset it or guarantee isolation from other tabs sharing the *same* session. Separate public demo sessions are isolated; the default local book remains shared. Run the experiments against a fresh volatile session for a controlled narrative; click each step separately and inspect the actual decision. The preview is read-only. The recovery panel displays startup verification metadata, not an on-demand replay endpoint. Recent trade/event tapes are process-local; a restart does not restore those tapes, even when the book is journal-recovered.
 
-**Embedding defaults to forbidden.** To permit only the read-only preview to be framed by one exact portfolio HTTPS origin, export `MATCHLINE_EMBED_ORIGIN=https://your-portfolio.example` before starting the server. `/lab`, all JSON APIs, and static assets retain `frame-ancestors 'none'`. This variable does not change CORS; no CORS is needed for same-origin requests inside the iframe. A local `file://` portfolio cannot be allowlisted through CSP. The portfolio will be wired only after a real HTTPS deploy is verified. Do not bind this unauthenticated order API directly to the public internet; public deployment hardening remains Commit 12.
+**Embedding defaults to forbidden.** With one exact `MATCHLINE_EMBED_ORIGIN=https://your-portfolio.example`, only `/preview` and `/embed` can permit that `frame-ancestors` origin;
+interactive `/embed` additionally requires public-demo mode. `/lab`, all JSON APIs and static assets retain `frame-ancestors 'none'`. This does not change CORS; `file://` is not allowed. Only deploy `MATCHLINE_PUBLIC_DEMO=true` behind a hosting provider's HTTPS ingress, with its resource and abuse limits understood. See the security guide.
 
 Run Java integration tests with `./gradlew clean test --no-daemon --max-workers=1 --console=plain`. Optional frontend pure-function tests: `node --test ui/tests/*.test.mjs` (Node 20+; no npm install). See [Commit 11 handoff](docs/COMMIT-11-HANDOFF.md) and [ADR 0012](docs/adr/0012-same-origin-exchange-lab.md).
 
@@ -27,7 +81,7 @@ Run Java integration tests with `./gradlew clean test --no-daemon --max-workers=
 - **JDK:** a Linux JDK 21 installed in WSL and selected as the Project SDK in IntelliJ.
 - **Build:** Gradle **8.14.3** via `./gradlew` / `gradlew.bat`; Gradle Kotlin DSL. You do not need system Gradle.
 - **IDE:** IntelliJ IDEA Community, using the WSL JDK and Gradle wrapper.
-- **Docker (optional):** Docker Desktop with WSL2 integration. The `smoke` profile runs a one-shot CLI check; the `api` profile serves a loopback-published HTTP simulator.
+- **Docker (optional):** Docker Desktop with WSL2 integration. The `smoke` profile runs a one-shot CLI check; the `api` profile serves the local shared HTTP simulator; `public-demo` starts isolated volatile books on loopback port 8081.
 
 **Gradle wrapper:** The official Gradle 8.14.3 wrapper JAR was downloaded and SHA-256 verified in the user's WSL environment. Ensure it is tracked in the Git repository. The initial bootstrap scripts remain for clean environments. See [wrapper details](gradle/wrapper/README.md). An internet connection is necessary for first Gradle dependency downloads.
 
@@ -52,7 +106,7 @@ MATCHLINE BOOTSTRAP OK | Java 21
 matching=true http=true journal=true
 ```
 
-Commits 01–09 were verified in the user's environment. Commit 10 HTTP metrics/benchmark were exercised by the user and committed locally; the user must finish configuring the `main` upstream push, and actual JMH output has not yet been shared. Commit 11 tests and browser scenarios require user verification. Reports are written to `build/reports/tests/test/`.
+Commits 01–09 were reported verified in the user's environment. The Commit 10 HTTP benchmark returned 40/40 requests successfully and the user created its local commit; the upstream push status was not independently confirmed. A screenshot of Commit 11's browser lab was provided. Actual JMH output, full Commit 11 test verification, GitHub Actions, Docker, and hosting verification have **not** been reported. Reports are written to `build/reports/tests/test/`.
 
 Expected recovery demo output:
 
@@ -91,7 +145,7 @@ The SELL executes three units against B1 at its **resting 100-tick price**; B1 h
 
 Supported endpoints: `GET /api/v1/health`, `POST /api/v1/orders`, `GET /api/v1/orders/{id}`, `POST /api/v1/orders/{id}/cancel`, `GET /api/v1/book?depth=10`, `GET /api/v1/trades?limit=50`, `GET /api/v1/events?limit=50`, `GET /api/v1/status`, `GET /api/v1/recovery`, and token-guarded `POST /api/v1/demo/reset`. The OpenAPI 3.0 document is served at [`/openapi.yaml`](src/main/resources/openapi.yaml). Only instrument `DEMO` is currently supported. Trades and events are **bounded, process-local HTTP-observed tapes** (2,048 compact decisions and 2,048 fills), not full durable audit history; after recovery they intentionally start empty. `/api/v1/recovery` exposes the **last startup recovery report**, not a live on-demand replay.
 
-By default the listener binds **127.0.0.1:8080**, accepts no cross-origin browser requests, and has **no reset token**. The server has a 4,096-byte request limit, 64 concurrent request permits, a global token budget of 240 requests burst / 4 requests per second, and a 5-second writer acknowledgement deadline. These are **demo safeguards, not production DDoS protection or authentication**. Server-side order submission is unauthenticated; do **not** expose this directly to the public internet. Explicit deployment hardening and public ingress are later commits. See [ADR 0010](docs/adr/0010-http-ingress-and-demo-reset.md).
+By default the listener binds **127.0.0.1:8080**, accepts no cross-origin browser requests, and has **no reset token**. The server has a 4,096-byte request limit, 64 concurrent request permits, a global token budget of 240 requests burst / 4 requests per second, and a 5-second writer acknowledgement deadline. These are **demo safeguards, not production DDoS protection or authentication**. Server-side order submission is unauthenticated; do **not** expose the *local/shared* mode directly to the public internet. The separate opt-in public-demo mode has per-visitor isolation and stricter capabilities, but remains educational and subject to infrastructure abuse limits. See [ADR 0010](docs/adr/0010-http-ingress-and-demo-reset.md).
 
 Configuration uses environment variables (see [`.env.example`](.env.example); it is not automatically loaded):
 

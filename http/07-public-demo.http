@@ -1,0 +1,75 @@
+### Commit 12 — Run only with MATCHLINE_PUBLIC_DEMO=true.
+### Select 'public-demo' environment (localhost:8081) in IntelliJ.
+
+### Public readiness — no session required
+GET {{baseUrl}}/api/v1/health
+
+> {% client.test("public service is ready", function () {
+    client.assert(response.status === 200);
+}); %}
+
+### Start a new independent session (opaque token, only for synthetic data)
+POST {{baseUrl}}/api/v1/session
+
+> {% client.test("session created with 43-char token", function () {
+    client.assert(response.status === 201);
+    client.assert(response.body.sessionToken.length === 43);
+    client.global.set("matchlineDemoSession", response.body.sessionToken);
+}); %}
+
+### Inspect initial empty book without multiple polls
+GET {{baseUrl}}/api/v1/dashboard?depth=5
+X-Matchline-Session: {{matchlineDemoSession}}
+
+> {% client.test("empty private book", function () {
+    client.assert(response.status === 200);
+    client.assert(response.body.book.asOfSequence === 0);
+}); %}
+
+### Place one actual order in this private demo book
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+X-Matchline-Session: {{matchlineDemoSession}}
+
+{"instrument":"DEMO","orderId":"DEMO-HTTP-1","side":"BUY","priceTicks":100,"quantity":5}
+
+> {% client.test("private writer ran decision one", function () {
+    client.assert(response.status === 200);
+    client.assert(response.body.sequence === 1);
+    client.assert(response.body.durable === false);
+}); %}
+
+### Inspect the private book after placement
+GET {{baseUrl}}/api/v1/dashboard?depth=5
+X-Matchline-Session: {{matchlineDemoSession}}
+
+> {% client.test("same-session book advanced", function () {
+    client.assert(response.status === 200);
+    client.assert(response.body.book.asOfSequence === 1);
+}); %}
+
+### Reset is unavailable in public mode
+POST {{baseUrl}}/api/v1/demo/reset
+X-Matchline-Session: {{matchlineDemoSession}}
+
+> {% client.test("public reset blocked", function () {
+    client.assert(response.status === 404);
+}); %}
+
+### Preview session (separate, seeded through real Java writer)
+POST {{baseUrl}}/api/v1/session?mode=preview
+
+> {% client.test("preview book is independent", function () {
+    client.assert(response.status === 201);
+    client.global.set("matchlinePreviewSession",response.body.sessionToken);
+}); %}
+
+### Read seeded preview state
+GET {{baseUrl}}/api/v1/dashboard?depth=5
+X-Matchline-Session: {{matchlinePreviewSession}}
+
+> {% client.test("preview sequence reflects real seeds", function () {
+    client.assert(response.status === 200);
+    client.assert(response.body.book.asOfSequence === 5);
+    client.assert(response.body.trades.length === 1);
+}); %}

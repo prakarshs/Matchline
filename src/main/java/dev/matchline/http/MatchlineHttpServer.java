@@ -53,9 +53,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * reads, enter the existing bounded single-writer sequencer. No mutable book
  * escapes the writer. Per-process trade/event tape is NOT a durable event log.
  *
- * <p>Default bind is loopback; no cross-origin browser access and no reset until
- * explicitly configured. No authentication for order placement: public bind must
- * only be used behind appropriate network protection and rate limiting.
+ * <p>Default bind is loopback. Opt-in public demo requires a random per-session
+ * capability header; each session gets an independent bounded volatile engine.
+ * These capabilities are not identities or user authentication.
  */
 public final class MatchlineHttpServer implements AutoCloseable {
     private static final InstrumentId DEMO = new InstrumentId("DEMO");
@@ -71,6 +71,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
     private final RateLimit rateLimit = new RateLimit();
     private final HttpMetrics httpMetrics = new HttpMetrics();
     private final RecentTape tape;
+    private final DemoSessions publicSessions;
     private SingleWriterSequencer engine;
     private RecoveryReport recovered;
     private boolean recoveredExistingJournal;
@@ -82,6 +83,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
         this.config = Objects.requireNonNull(config, "config");
         this.tape = new RecentTape(config.journalPath() != null
                 && config.durability() == DurabilityPolicy.SYNC_EACH_RECORD);
+        this.publicSessions = config.publicDemo() ? new DemoSessions() : null;
         try {
             server = HttpServer.create(config.bind(), 0);
         } catch (IOException cannotBind) {
@@ -98,6 +100,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
         } catch (IOException | RuntimeException failed) {
             server.stop(0);
             if (engine != null) engine.close();
+            if (publicSessions != null) publicSessions.close();
             executor.close();
             throw failed;
         }
@@ -211,7 +214,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
             return;
         }
         if (UiAssets.serves(path) && "GET".equals(method)) {
-            UiAssets.send(x, path, config.embedOrigin());
+            UiAssets.send(x, path, config.embedOrigin(), config.publicDemo());
             httpMetrics.response(200);
             return;
         }
@@ -224,6 +227,65 @@ public final class MatchlineHttpServer implements AutoCloseable {
                 httpMetrics.response(200);
                 x.getResponseBody().write(bytes);
             }
+            return;
+        }
+        if ("/api/v1/session".equals(path) && "POST".equals(method)) {
+            if (publicSessions == null) throw new ApiError(404, "NOT_FOUND", "unknown endpoint");
+            String query = x.getRequestURI().getRawQuery();
+            if (query != null && !query.equals("mode=preview")) {
+                throw new ApiError(400, "INVALID_QUERY", "expected no query or ?mode=preview");
+            }
+            if (x.getRequestHeaders().getFirst("Content-Length") != null
+                    && !"0".equals(x.getRequestHeaders().getFirst("Content-Length"))) {
+                throw new ApiError(400, "INVALID_BODY", "session creation accepts no body");
+            }
+            DemoSessions.Issued issued = publicSessions.create("mode=preview".equals(query));
+            if (issued == null) {
+                x.getResponseHeaders().set("Retry-After", "60");
+                throw new ApiError(429, "SESSION_CAPACITY", "public demo is at session capacity; retry later");
+            }
+            send(x, 201, ApiView.of("sessionToken", issued.session().token,
+                    "idleTimeoutSeconds", DemoSessions.IDLE_SECONDS,
+                    "mode", issued.session().preview ? "preview" : "lab",
+                    "durable", false,
+                    "note", "Temporary isolated synthetic engine; session token is not a login"));
+            return;
+        }
+        if ("/api/v1/demo/reset".equals(path) && "POST".equals(method)) {
+            if (config.publicDemo()) throw new ApiError(404, "NOT_FOUND", "unknown endpoint");
+            reset(x);
+            return;
+        }
+        DemoSessions.Session session = null;
+        try {
+            if (publicSessions != null) {
+                String key = x.getRequestHeaders().getFirst("X-Matchline-Session");
+                if (key == null) throw new ApiError(401, "SESSION_REQUIRED", "create a public demo session first");
+                session = publicSessions.acquire(key);
+                if (session == null) throw new ApiError(401, "SESSION_EXPIRED", "demo session expired; start a fresh session");
+            }
+            SingleWriterSequencer engine = session != null ? session.engine : this.engine;
+            RecentTape tape = session != null ? session.tape : this.tape;
+            long generation = session != null ? 1 : this.generation;
+        if ("/api/v1/dashboard".equals(path) && "GET".equals(method)) {
+            int depth = queryInt(x, "depth", 5, 1, 10);
+            sessionLock.readLock().lock();
+            try {
+                if (closed) throw new ApiError(503, "SERVICE_CLOSED", "HTTP service is closed");
+                var book = await(engine.inspect(depth));
+                send(x, 200, ApiView.of(
+                        "book", ApiView.book(book),
+                        "trades", tape.events(12, true),
+                        "events", tape.events(12, false),
+                        "status", status(engine, tape, generation),
+                        "metrics", MetricsFormat.asJson(engine.metricsSnapshot(), httpMetrics.snapshot(),
+                                generation, engine.lastProcessedSequence(), engine.queuedWorkCount(), engine.queueCapacity()),
+                        "recovery", ApiView.of("instrument", "DEMO", "journalConfigured", config.journalPath() != null,
+                                "durabilityPolicy", config.journalPath() == null ? "NONE" : config.durability().name(),
+                                "recoveredExistingJournal", recoveredExistingJournal,
+                                "lastRecovery", recovered == null ? null : recoveryReport(recovered),
+                                "lastProcessedSequence", engine.lastProcessedSequence())));
+            } finally { sessionLock.readLock().unlock(); }
             return;
         }
         if (("/api/v1/metrics".equals(path) || "/metrics".equals(path)) && "GET".equals(method)) {
@@ -247,10 +309,6 @@ public final class MatchlineHttpServer implements AutoCloseable {
             } finally { sessionLock.readLock().unlock(); }
             return;
         }
-        if ("/api/v1/demo/reset".equals(path) && "POST".equals(method)) {
-            reset(x);
-            return;
-        }
         sessionLock.readLock().lock();
         try {
             if (closed) throw new ApiError(503, "SERVICE_CLOSED", "HTTP service is closed");
@@ -262,7 +320,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
                         new OrderId(string(payload, "orderId")), side(payload),
                         new PriceTicks(integer(payload, "priceTicks")),
                         new OrderQuantity(integer(payload, "quantity")));
-                complete(x, command);
+                complete(x, command, engine, tape);
                 return;
             }
             if (path.startsWith("/api/v1/orders/") && path.endsWith("/cancel")
@@ -270,7 +328,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
                 String id = path.substring("/api/v1/orders/".length(), path.length() - "/cancel".length());
                 if (id.isEmpty() || id.indexOf('/') >= 0 || id.indexOf('%') >= 0)
                     throw new ApiError(404, "NOT_FOUND", "unknown endpoint");
-                complete(x, new CancelOrder(DEMO, new OrderId(id)));
+                complete(x, new CancelOrder(DEMO, new OrderId(id)), engine, tape);
                 return;
             }
             if (path.startsWith("/api/v1/orders/") && "GET".equals(method)) {
@@ -305,7 +363,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
                 return;
             }
             if ("/api/v1/status".equals(path) && "GET".equals(method)) {
-                send(x, 200, status());
+                send(x, 200, status(engine, tape, generation));
                 return;
             }
             if ("/api/v1/recovery".equals(path) && "GET".equals(method)) {
@@ -320,9 +378,10 @@ public final class MatchlineHttpServer implements AutoCloseable {
             }
             throw new ApiError(404, "NOT_FOUND", "unknown endpoint");
         } finally { sessionLock.readLock().unlock(); }
+        } finally { if (session != null) session.release(); }
     }
 
-    private Map<String, Object> status() {
+    private Map<String, Object> status(SingleWriterSequencer engine, RecentTape tape, long generation) {
         return ApiView.of("application", "MATCHLINE", "instrument", "DEMO", "generation", generation,
                 "accepting", engine.accepting(), "healthy", !closed && engine.accepting()
                         && engine.fatalFailure().isEmpty(),
@@ -332,7 +391,8 @@ public final class MatchlineHttpServer implements AutoCloseable {
                 "journalConfigured", config.journalPath() != null,
                 "durabilityPolicy", config.journalPath() == null ? "NONE" : config.durability().name(),
                 "tapeRecordedCommands", tape.size(), "tapeCapacity", RecentTape.MAX_COMMANDS, "tradeTapeCapacity", RecentTape.MAX_TRADES,
-                "resetEnabled", config.resetToken() != null && config.journalPath() == null);
+                "resetEnabled", !config.publicDemo() && config.resetToken() != null && config.journalPath() == null,
+                "publicDemo", config.publicDemo(), "sessionIsolated", config.publicDemo());
     }
 
     private static Map<String, Object> recoveryReport(RecoveryReport r) {
@@ -341,7 +401,8 @@ public final class MatchlineHttpServer implements AutoCloseable {
                 "resolvedPendingCommand", r.resolvedPendingCommand());
     }
 
-    private void complete(HttpExchange x, dev.matchline.domain.OrderCommand command) throws Exception {
+    private void complete(HttpExchange x, dev.matchline.domain.OrderCommand command,
+                          SingleWriterSequencer engine, RecentTape tape) throws Exception {
         CommandTicket ticket = engine.submit(command);
         SequencedResult result;
         try {
@@ -523,7 +584,7 @@ public final class MatchlineHttpServer implements AutoCloseable {
         }
         if (started) server.stop(1);
         sessionLock.writeLock().lock();
-        try { engine.close(); }
+        try { engine.close(); if (publicSessions != null) publicSessions.close(); }
         finally { sessionLock.writeLock().unlock(); executor.shutdown(); }
     }
 }

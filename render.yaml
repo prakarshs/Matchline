@@ -1,0 +1,16 @@
+# Optional Render Blueprint. Review free limits before creating the service.
+# Public HTTPS hostname is assigned by Render. Do not claim deployment until checked.
+services:
+  - type: web
+    name: matchline-lab
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: MATCHLINE_HTTP_HOST
+        value: 0.0.0.0
+      - key: MATCHLINE_PUBLIC_DEMO
+        value: "true"
+      # Configure the exact HTTPS portfolio origin in Render AFTER creating it.
+      # Do not configure CORS, journaling, reset, or custom durable storage on Free.

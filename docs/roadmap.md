@@ -1,6 +1,6 @@
 # Sequential commit plan
 
-Each item represents a sequential **manual** Git commit. The user confirmed commits 01–09; Commit 10 was committed locally with verified HTTP benchmark output, but its push reported no upstream branch. Actual JMH execution has not yet been reported. Commit 11 code is supplied for user browser/test verification, and Commit 12 remains planned. Do not claim remote pushes or visual checks without user evidence.
+Each item represents a sequential **manual** Git commit. The user confirmed commits 01–09; Commit 10 was committed locally with verified HTTP benchmark output, but its push reported no upstream branch. Actual JMH execution has not yet been reported. Commit 11's browser screenshot was shown by the user; its full test/push gate is not independently visible. Commit 12 code is now supplied as a release candidate, pending the user's Gradle, Docker, CI and deployment verification. Do not claim remote pushes or visual checks without user evidence.
 
 | Commit | Implementation target | Verification gate |
 |---|---|---|

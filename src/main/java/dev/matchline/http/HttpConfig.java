@@ -20,16 +20,23 @@ public final class HttpConfig {
     private final Path snapshotPath;
     private final DurabilityPolicy durability;
     private final int queueCapacity;
+    private final boolean publicDemo;
 
     public HttpConfig(InetSocketAddress bind, String allowedOrigin, String resetToken,
                       Path journalPath, Path snapshotPath, DurabilityPolicy durability, int queueCapacity) {
         this(bind, allowedOrigin, resetToken, journalPath, snapshotPath, durability,
-                queueCapacity, null);
+                queueCapacity, null, false);
     }
 
     public HttpConfig(InetSocketAddress bind, String allowedOrigin, String resetToken,
                       Path journalPath, Path snapshotPath, DurabilityPolicy durability,
                       int queueCapacity, String embedOrigin) {
+        this(bind, allowedOrigin, resetToken, journalPath, snapshotPath, durability, queueCapacity, embedOrigin, false);
+    }
+
+    public HttpConfig(InetSocketAddress bind, String allowedOrigin, String resetToken,
+                      Path journalPath, Path snapshotPath, DurabilityPolicy durability,
+                      int queueCapacity, String embedOrigin, boolean publicDemo) {
         this.bind = Objects.requireNonNull(bind, "bind");
         if (bind.isUnresolved() || bind.getPort() < 0 || bind.getPort() > 65535) {
             throw new IllegalArgumentException("HTTP bind address must resolve and port must be 0..65535");
@@ -54,7 +61,10 @@ public final class HttpConfig {
                         || (uri.getRawPath() != null && !uri.getRawPath().isEmpty())
                         || uri.getRawQuery() != null || uri.getRawFragment() != null
                         || !("https".equals(uri.getScheme()) || "http".equals(uri.getScheme()))
-                        || !uri.toString().equals(embedOrigin)) {
+                        || !uri.toString().equals(embedOrigin)
+                        || ("http".equals(uri.getScheme())
+                            && !"localhost".equalsIgnoreCase(uri.getHost())
+                            && !"127.0.0.1".equals(uri.getHost()))) {
                     throw new IllegalArgumentException("not a valid origin");
                 }
             } catch (IllegalArgumentException invalid) {
@@ -76,13 +86,23 @@ public final class HttpConfig {
         this.journalPath = journalPath == null ? null : journalPath.toAbsolutePath().normalize();
         this.snapshotPath = snapshotPath == null ? null : snapshotPath.toAbsolutePath().normalize();
         this.durability = Objects.requireNonNull(durability, "durability");
+        if (publicDemo && (journalPath != null || snapshotPath != null || resetToken != null && !resetToken.isBlank()
+                || allowedOrigin != null && !allowedOrigin.isBlank())) {
+            throw new IllegalArgumentException("public demo must be volatile, without reset token or cross-origin API access");
+        }
+        this.publicDemo = publicDemo;
         this.queueCapacity = queueCapacity;
     }
 
     public static HttpConfig fromEnvironment(Map<String, String> env) {
         Objects.requireNonNull(env, "env");
         String host = env.getOrDefault("MATCHLINE_HTTP_HOST", "127.0.0.1");
-        int port = Integer.parseInt(env.getOrDefault("MATCHLINE_HTTP_PORT", "8080"));
+        String requestedPort = env.getOrDefault("MATCHLINE_HTTP_PORT", env.getOrDefault("PORT", "8080"));
+        int port = Integer.parseInt(requestedPort);
+        String publicValue = env.getOrDefault("MATCHLINE_PUBLIC_DEMO", "false");
+        if (!publicValue.equals("true") && !publicValue.equals("false")) {
+            throw new IllegalArgumentException("MATCHLINE_PUBLIC_DEMO must be true or false");
+        }
         try {
             InetAddress address = InetAddress.getByName(host);
             if (port < 1 || port > 65535) throw new IllegalArgumentException("port must be 1..65535");
@@ -92,7 +112,7 @@ public final class HttpConfig {
                     env.containsKey("MATCHLINE_SNAPSHOT_PATH") ? Path.of(env.get("MATCHLINE_SNAPSHOT_PATH")) : null,
                     DurabilityPolicy.valueOf(env.getOrDefault("MATCHLINE_DURABILITY", "SYNC_EACH_RECORD")),
                     Integer.parseInt(env.getOrDefault("MATCHLINE_QUEUE_CAPACITY", "1024")),
-                    env.get("MATCHLINE_EMBED_ORIGIN"));
+                    env.get("MATCHLINE_EMBED_ORIGIN"), Boolean.parseBoolean(publicValue));
         } catch (UnknownHostException badHost) {
             throw new IllegalArgumentException("invalid HTTP bind host", badHost);
         }
@@ -106,10 +126,11 @@ public final class HttpConfig {
     public Path snapshotPath() { return snapshotPath; }
     public DurabilityPolicy durability() { return durability; }
     public int queueCapacity() { return queueCapacity; }
+    public boolean publicDemo() { return publicDemo; }
 
     @Override public String toString() {
         return "HttpConfig[bind=" + bind + ", journal=" + (journalPath != null)
                 + ", cors=" + (allowedOrigin != null) + ", embed=" + (embedOrigin != null)
-                + ", reset=" + (resetToken != null) + "]";
+                + ", reset=" + (resetToken != null) + ", publicDemo=" + publicDemo + "]";
     }
 }

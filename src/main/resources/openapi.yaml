@@ -7,6 +7,10 @@ info:
     Not a trading venue. Price is integral abstract ticks, not currency.
     All successful command responses reflect a single-writer decision;
     durable=true only when synchronous fsync-per-record journaling is active.
+    In MATCHLINE_PUBLIC_DEMO=true mode, all mutable and diagnostic API routes
+    require X-Matchline-Session from POST /api/v1/session. Public sessions are
+    volatile, isolated, synthetic and expire after 20 idle minutes; the token
+    is not a user account, access-control identity, or durability guarantee.
 servers:
   - url: http://127.0.0.1:8080
 paths:
@@ -30,6 +34,8 @@ paths:
       summary: Read-only, responsive browser preview (HTML)
       description: >-
         Polls the same Java server. No submission, cancellation or reset controls.
+        Public mode starts a seeded, isolated synthetic order book from real
+        Java commands; local mode reads the existing shared book.
         Can be framed only when MATCHLINE_EMBED_ORIGIN explicitly specifies
         an exact portfolio origin; independent of CORS.
       responses:
@@ -38,6 +44,75 @@ paths:
           content:
             text/html:
               schema: {type: string}
+  /embed:
+    get:
+      operationId: getEmbeddableLab
+      summary: Responsive interactive laboratory, framed only by the configured portfolio origin
+      description: Same actual Java HTTP matching core as /lab. No client-side trade simulation.
+      responses:
+        '200':
+          description: Interactive embedded laboratory HTML
+          content:
+            text/html:
+              schema: {type: string}
+  /api/v1/session:
+    post:
+      operationId: createIsolatedDemoSession
+      summary: Start an ephemeral isolated public-demo book
+      description: >-
+        Only available with MATCHLINE_PUBLIC_DEMO=true. No body. Optional
+        ?mode=preview seeds a read-only browser example through real writer
+        commands. The returned 43-character token must be sent in
+        X-Matchline-Session for other API requests. Tokens expire after
+        20 idle minutes; maximum 12 active sessions. No persistence or
+        user authentication; never send the token to unrelated origins.
+      parameters:
+        - name: mode
+          in: query
+          schema: {type: string, enum: [preview]}
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionToken, idleTimeoutSeconds, mode, durable]
+                properties:
+                  sessionToken: {type: string, minLength: 43, maxLength: 43}
+                  idleTimeoutSeconds: {type: integer, example: 1200}
+                  mode: {type: string, enum: [preview, lab]}
+                  durable: {type: boolean, example: false}
+        '429':
+          $ref: '#/components/responses/Error'
+  /api/v1/dashboard:
+    get:
+      operationId: getCombinedLabDashboard
+      summary: One writer-ordered book snapshot plus process-local UI observations
+      description: >-
+        Reduces browser polling from several HTTP requests to one. Book is
+        read on the writer; tape/status/metrics may be observed slightly
+        later and are process-local, not a transactional snapshot with book.
+      parameters:
+        - name: depth
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 10, default: 5}
+      responses:
+        '200':
+          description: Combined live dashboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  book: {$ref: '#/components/schemas/Book'}
+                  trades: {type: array, items: {$ref: '#/components/schemas/Trade'}}
+                  events: {type: array, items: {$ref: '#/components/schemas/Decision'}}
+                  status: {type: object, additionalProperties: true}
+                  metrics: {type: object, additionalProperties: true}
+                  recovery: {type: object, additionalProperties: true}
+        '401':
+          $ref: '#/components/responses/Error'
   /api/v1/health:
     get:
       operationId: getHealth

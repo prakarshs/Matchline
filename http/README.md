@@ -88,3 +88,14 @@ Open [`06-exchange-lab.http`](06-exchange-lab.http) to check both pages and
 static assets. The actual **visual interaction** happens at `/lab` in a browser;
 `/preview` is an intentionally read-only, embeddable-by-allowlist version.
 The browser polls the same API used by this collection. See the root README.
+
+### Commit 12 — public-demo HTTP collection
+
+[`07-public-demo.http`](07-public-demo.http) is for
+`MATCHLINE_PUBLIC_DEMO=true` **only**. It creates an isolated session and
+passes `X-Matchline-Session` to the dashboard and command calls. Use the
+`local-alt-port` environment with port 18081 or edit the new
+`public-demo` environment to `http://127.0.0.1:8081`. The original
+01–06 files assume local/shared mode and intentionally do not send session
+headers. Browser `/lab`, `/preview`, and `/embed` manage their own capability
+session automatically. A public session is volatile and is **not** a login.

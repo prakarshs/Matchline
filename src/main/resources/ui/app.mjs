@@ -66,24 +66,62 @@ function showNotice(message,kind='info'){
   const el=byId('notice');if(!el)return;
   el.hidden=false;el.className='notice '+kind;el.textContent=message;
 }
-async function request(path,options={}) {
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),6000);
+// Session capabilities are scoped to this browser tab and this Java origin.
+// No third-party iframe cookies are needed; a 401 never represents an accepted command.
+const publicPreview = typeof document !== 'undefined' && document.documentElement.dataset.view === 'preview';
+const sessionKey = publicPreview ? 'matchline-demo-preview-v1' : 'matchline-demo-lab-v1';
+let sessionToken = null;
+try { sessionToken = sessionStorage.getItem(sessionKey); } catch { /* storage may be blocked in iframes */ }
+let creatingSession = null;
+
+async function fetchJson(path, options={}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const res=await fetch(path,{...options,cache:'no-store',credentials:'same-origin',signal:controller.signal});
+    const headers = {...(options.headers || {})};
+    if (sessionToken) headers['X-Matchline-Session'] = sessionToken;
+    const res = await fetch(path,{...options,headers,cache:'no-store',credentials:'same-origin',signal:controller.signal});
     let data;
-    try{data=await res.json()}catch{throw new Error(`Non-JSON response (HTTP ${res.status})`)}
-    if(!res.ok && data?.decision!=='REJECTED'){
-      const code=data?.error?.code||`HTTP_${res.status}`;
-      const detail=data?.error?.message||'Request rejected';
-      throw new Error(`${code}: ${detail}${data.sequence!=null?` (sequence ${data.sequence})`:''}`);
-    }
-    return data;
+    try { data = await res.json(); } catch { throw new Error(`Non-JSON response (HTTP ${res.status})`); }
+    return {res,data};
   } catch(error) {
-    if(error?.name==='AbortError')throw new Error('Request timed out; command outcome may be unknown. Check engine status before retrying.');
+    if(error?.name==='AbortError') throw new Error('Request timed out; a submitted command may have an unknown outcome. Inspect status before retrying.');
     throw error;
-  }finally{clearTimeout(timer)}
+  } finally { clearTimeout(timer); }
 }
+
+async function startPublicSession() {
+  if (creatingSession) return creatingSession;
+  creatingSession = (async () => {
+    // Deliberately do not send the old session token when requesting a replacement.
+    sessionToken = null;
+    try { sessionStorage.removeItem(sessionKey); } catch { /* optional storage */ }
+    const {res,data} = await fetchJson('/api/v1/session' + (publicPreview ? '?mode=preview' : ''),{method:'POST'});
+    if (!res.ok || !/^[A-Za-z0-9_-]{43}$/.test(data?.sessionToken || '')) {
+      throw new Error(`${data?.error?.code || 'SESSION_UNAVAILABLE'}: ${data?.error?.message || 'Cannot start an isolated public demo'}`);
+    }
+    sessionToken = data.sessionToken;
+    try { sessionStorage.setItem(sessionKey,sessionToken); } catch { /* optional storage */ }
+  })();
+  try { await creatingSession; } finally { creatingSession = null; }
+}
+
+async function request(path, options={}) {
+  const attemptedToken = sessionToken;
+  let {res,data} = await fetchJson(path,options);
+  if (res.status === 401 && ['SESSION_REQUIRED','SESSION_EXPIRED'].includes(data?.error?.code)) {
+    // Server rejects the request *before* reading or mutating a book.
+    // A single flight prevents parallel panels from creating separate sessions.
+    if (creatingSession) await creatingSession;
+    else if (!sessionToken || sessionToken === attemptedToken) await startPublicSession();
+    ({res,data} = await fetchJson(path,options));
+  }
+  if (!res.ok && data?.decision !== 'REJECTED') {
+    throw new Error(`${data?.error?.code || `HTTP_${res.status}`}: ${data?.error?.message || 'Request rejected'}${data.sequence!=null?` (sequence ${data.sequence})`:''}`);
+  }
+  return data;
+}
+
 function renderDepth(id,levels,side,limit){const root=byId(id);if(!root)return;const rows=depthRows(levels,limit);if(!rows.length){empty(root,`No ${side==='bid'?'bids':'asks'} resting`,'empty-levels');return}const fragment=document.createDocumentFragment();for(const row of rows){const item=element('div',`depth-row ${side}`);const bar=element('span','bar');bar.style.setProperty('--width',`${row.width.toFixed(2)}%`);bar.setAttribute('aria-hidden','true');item.append(bar,element('span','price-cell',pretty(row.priceTicks)),element('span','',pretty(row.quantity)),element('span','order-count',pretty(row.orders)));fragment.append(item)}root.replaceChildren(fragment)}
 function renderBook(book,preview){const summary=marketSummary(book);text('hero-sequence',pretty(book.asOfSequence));text('book-asof',`SEQ ${pretty(book.asOfSequence)}`);text('best-bid',pretty(summary.bid));text('best-ask',pretty(summary.ask));text('spread',pretty(summary.spread));text('midpoint',summary.mid===null?'MID —':`MID ${pretty(summary.mid)}`);text('resting-count',pretty(book.restingOrders));renderDepth('bids',book.bids,'bid',preview?3:5);renderDepth('asks',book.asks,'ask',preview?3:5)}
 function renderTrades(trades,preview){const root=byId('trades');if(!root)return;const list=(Array.isArray(trades)?trades:[]).slice(-(preview?2:12)).reverse();if(!list.length){empty(root,'No trades observed yet.');return}const f=document.createDocumentFragment();for(const trade of list){const li=element('li');const t=element('div','trade-text');t.append(element('span','trade-seq',`#${pretty(trade.sequence)}.${trade.fillIndex}`));const pair=element('span','trade-pair');pair.append(document.createTextNode(`${trade.makerOrderId} `),element('span','', '→'),document.createTextNode(` ${trade.takerOrderId}`));t.append(pair);const right=element('div','trade-qty',pretty(trade.quantity));right.append(element('small','',`@ ${pretty(trade.priceTicks)}`));li.append(t,right);f.append(li)}root.replaceChildren(f)}
@@ -93,23 +131,27 @@ function renderRecovery(r){text('policy',r.durabilityPolicy||'NONE');text('recov
 function renderMetrics(metrics){text('metric-completed',pretty(metrics.writer?.completed));text('metric-rejected',pretty(metrics.writer?.businessRejected));text('metric-p99',formatAckP99(metrics.acknowledgementNanos?.p99UpperBoundNanos));text('metric-http',pretty(metrics.http?.responses2xx))}
 
 function init(){const preview=document.documentElement.dataset.view==='preview';let refreshing=false;let submitting=false;let scenario=null;let stepIndex=0;let side='BUY';
-  async function refresh(){if(refreshing||submitting||document.hidden)return;refreshing=true;try{
-    const routes=preview?['/api/v1/book?depth=5','/api/v1/trades?limit=10','/api/v1/status']:
-      ['/api/v1/book?depth=5','/api/v1/trades?limit=12','/api/v1/events?limit=12','/api/v1/status','/api/v1/metrics','/api/v1/recovery'];
-    // Same-origin requests. A failed endpoint leaves other successful panels useful.
-    const settled=await Promise.allSettled(routes.map(path=>request(path)));
-    if(settled[0].status==='rejected')throw settled[0].reason;
-    renderBook(settled[0].value,preview);
-    if(settled[1].status==='fulfilled')renderTrades(settled[1].value.trades,preview);
-    if(!preview){if(settled[2].status==='fulfilled')renderEvents(settled[2].value.events);
-      if(settled[3].status==='fulfilled')renderStatus(settled[3].value);
-      if(settled[4].status==='fulfilled')renderMetrics(settled[4].value);
-      if(settled[5].status==='fulfilled')renderRecovery(settled[5].value);
-      text('refresh-label',`AS OF SEQ ${pretty(settled[0].value.asOfSequence)}`);
-    }
-    setConnected(true);
-  }catch(error){setConnected(false);if(!preview)showNotice(`Cannot refresh: ${error.message}`,'error')}
-  finally{refreshing=false}}
+  async function refresh(){
+    if(refreshing||submitting||document.hidden)return;
+    refreshing=true;
+    try {
+      // A single ordered dashboard barrier replaces 3–6 polling requests.
+      const data=await request('/api/v1/dashboard?depth=5');
+      renderBook(data.book,preview);
+      renderTrades(data.trades,preview);
+      if(!preview){
+        renderEvents(data.events);
+        renderStatus(data.status);
+        renderMetrics(data.metrics);
+        renderRecovery(data.recovery);
+        text('refresh-label',`AS OF SEQ ${pretty(data.book.asOfSequence)}`);
+      }
+      setConnected(true);
+    }catch(error){
+      setConnected(false);
+      if(!preview)showNotice(`Cannot refresh: ${error.message}`,'error');
+    }finally{refreshing=false;}
+  }
   async function sendCommand(path,payload){const options={method:'POST',headers:{'Content-Type':'application/json'}};if(payload)options.body=JSON.stringify(payload);return request(path,options)}
   async function execute(step){if(step.kind==='cancel')return sendCommand(`/api/v1/orders/${encodeURIComponent(step.orderId)}/cancel`);return sendCommand('/api/v1/orders',validateOrder(step.order))}
   function describeDecision(r){if(r.decision==='REJECTED')return `#${r.sequence} · REJECTED: ${r.rejection?.code||'Unknown'} — ${r.rejection?.message||''}`;
@@ -133,4 +175,9 @@ function init(){const preview=document.documentElement.dataset.view==='preview';
   void refresh();setInterval(()=>void refresh(),preview?PREVIEW_POLL_MS:POLL_MS);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)void refresh()});
 }
-if(typeof document!=='undefined')init();
+if (typeof document !== 'undefined') {
+  if (location.pathname === '/embed' || location.pathname === '/embed/') {
+    document.documentElement.classList.add('embedded-lab');
+  }
+  init();
+}
