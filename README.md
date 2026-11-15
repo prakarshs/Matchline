@@ -4,7 +4,7 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 04 / in-memory limit-order matching.** The project now has a Java 21 matching core with price-time priority, partial/multiple fills, immutable maker-priced trade values, and order-ID indexing. It does **not yet** support cancellation, lifetime duplicate-ID tracking, concurrent ingress, a journal, HTTP or a browser demo. These remain future increments.
+> **Status: Commit 05 / in-memory limit-order matching and cancellation.** The Java 21 core supports price-time priority, partial/multiple fills, cancellation of resting remainders, immutable result values, and lifetime duplicate-ID rejection per book instance. Concurrent ingress, a durable journal, HTTP and the browser demo remain future increments.
 
 ## Canonical development environment
 
@@ -36,7 +36,7 @@ MATCHLINE BOOTSTRAP OK | Java 21
 matching=true http=false journal=false
 ```
 
-Expected after Commit 04: **107 passing JUnit cases** (79 previously verified through Commit 03, plus 28 matching cases). Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
+Expected after Commit 05: all **107 previously verified cases** plus the new cancellation and reference-model tests. The user confirms the actual total in Gradle output. Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
 
 There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 04.
 
@@ -62,17 +62,17 @@ flowchart LR
 
 Planned separation: core Java code holds domain rules; adapters handle HTTP and storage; state changes are made only by a sequenced writer per book. No database or network call enters the matching hot path. The plain-Java domain and in-memory price-time matching core exist; the single-writer gateway and persistence remain future work.
 
-For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-04-HANDOFF.md`](docs/COMMIT-04-HANDOFF.md).
+For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-05-HANDOFF.md`](docs/COMMIT-05-HANDOFF.md).
 
 ## Current domain contract and limitations
 
-- `PlaceLimitOrder(instrument, orderId, side, price, quantity)` and `CancelOrder(instrument, orderId)` are immutable validated requests. **Only** placing a limit order is currently executable through `LimitOrderBook.executeLimit`; no journal or public command gateway exists.
+- `PlaceLimitOrder(instrument, orderId, side, price, quantity)` and `CancelOrder(instrument, orderId)` are immutable validated requests. Both placing a limit order (`LimitOrderBook.executeLimit`) and cancelling a resting remainder (`LimitOrderBook.cancel`) are executable in memory; no journal or public command gateway exists.
 - Instrument: 1–12 ASCII uppercase characters, starting A–Z; IDs: 1–64 ASCII characters, starting alphanumeric. Neither is normalized. The planned initial instrument is `DEMO`.
 - Price: whole ticks from **1 to 1,000,000,000**; new-order quantity: **1 to 1,000,000**. Invalid inputs fail fast with machine-readable rejection codes. No floating-point arithmetic.
 - Maximum **per-order** abstract tick-notional is `10^15`; it is not a currency amount. Totals across orders must still be checked.
-- The book rejects **currently resting** duplicate IDs; reuse of a fully executed ID is still possible. Lifetime uniqueness and cancellation are Commit 05 work. See [ADR 0003](docs/adr/0003-bounded-order-contracts.md).
+- The book rejects **all previously accepted** placement IDs within the same book instance, including fully executed/cancelled IDs. ID history is capped at 1,000,000 accepted orders by default (configurable to 2,000,000 maximum), and is not durable yet. Unknown or previously completed cancel targets reject with `ORDER_NOT_FOUND`. See [ADR 0006](docs/adr/0006-cancellation-id-history-and-amend-policy.md).
 
-## Current in-memory matching book (Commits 03–04)
+## Current in-memory matching book (Commits 03–05)
 
 `dev.matchline.book.LimitOrderBook` stores resting orders and now executes one in-memory limit order at a time:
 
@@ -86,6 +86,9 @@ var result = book.executeLimit(new PlaceLimitOrder(
     new PriceTicks(99), new OrderQuantity(3)));
 // A trade against B1 for quantity 3 executes at B1's resting price (100).
 var trades = result.trades();
+var cancelled = book.cancel(new dev.matchline.domain.CancelOrder(
+    new InstrumentId("DEMO"), new OrderId("B1")));
+// The remaining 1 unit of B1 is cancelled; B1 can never be reused in this book.
 var bestBid = book.bestOrder(Side.BUY);
 var bidDepth = book.depth(Side.BUY, 10);
 var fifoAt100 = book.ordersAt(Side.BUY, new PriceTicks(100));
@@ -93,18 +96,18 @@ var fifoAt100 = book.ordersAt(Side.BUY, new PriceTicks(100));
 
 - `TreeMap` per side (BUY descending, SELL ascending), `LinkedHashMap` FIFO per level, and an active order-ID `HashMap` indexing the same internal mutable orders.
 - Add to an existing price level and lookup by ID: expected O(1); creating a new price level: O(log P), where P = price levels. Best-price access: O(log P) worst-case. A depth/queue read is proportional to the result size.
-- `executeLimit` matches crossed makers at their resting prices, preserving FIFO on partial fills and removing fully filled makers from both indexes. It rests any unmatched remainder behind existing orders at its price. Rejection preflight handles instrument mismatch, active duplicate IDs and no-capacity remainders **before any mutation**. Lifetime ID reuse prohibition remains for Commit 05.
-- The older `addResting` methods are retained for controlled seeding and residual storage. They still reject crossed insertion rather than executing it.
+- `executeLimit` matches crossed makers at their resting prices, preserving FIFO on partial fills and removing fully filled makers from both indexes. It rests any unmatched remainder behind existing orders at its price. Rejection preflight handles instrument mismatch, active duplicate IDs and no-capacity remainders **before any mutation**. Lifetime ID reuse prohibition is now enforced with a bounded in-memory ID history.
+- The older `addResting` methods are retained for controlled seeding and residual storage. They still reject crossed insertion rather than executing it, and now also consume IDs from the same lifetime history.
 - Default capacity 50,000 resting orders/book (hard configuration ceiling 100,000); `depth` accepts 1..1,000 levels. Read views/lists are immutable; the book itself is **not thread-safe**, pending the sequencer.
 - Local insertion ordinals exist only to explain FIFO: they are not acceptance sequence IDs, persisted journal offsets or durability acknowledgements.
 
-See [ADR 0004](docs/adr/0004-price-level-order-book.md), [ADR 0005](docs/adr/0005-in-memory-matching-and-capacity.md), and [Commit 04 handoff](docs/COMMIT-04-HANDOFF.md).
+Cancels remove only outstanding quantity, not past trades, and can eliminate a price level. There is **no amend command**; cancel + place a new ID loses FIFO priority and is not atomic. See [ADR 0004](docs/adr/0004-price-level-order-book.md), [ADR 0005](docs/adr/0005-in-memory-matching-and-capacity.md), [ADR 0006](docs/adr/0006-cancellation-id-history-and-amend-policy.md), and [Commit 05 handoff](docs/COMMIT-05-HANDOFF.md).
 
 ## Current limitations
 
-- In-memory limit matching is implemented, but there is no cancellation, lifetime deduplication, command sequencer or journalled acceptance.
+- In-memory matching and cancellation are implemented, but neither the lifetime ID set nor any command outcome is persisted; there is no command sequencer or journalled acceptance.
 - No HTTP API, SSE, persistence, journal replay, recovery snapshot or benchmark. Reapplying an identical in-memory list in a test is NOT crash recovery.
-- Not thread-safe; only the owning thread may touch the book. The CLI has a self-check, not an interactive order-placement interface.
+- Not thread-safe; only the owning thread may touch the book. Cancel-before-match and match-before-cancel tests model call order, not concurrent racing threads. The CLI has a self-check, not an interactive order-placement interface.
 - No production suitability, deployment URL, latency number or throughput claim.
 - Initial dependency downloads require internet access. `MANIFEST.sha256` is the historical **Commit 01 bootstrap ZIP** integrity manifest, not a rolling source-tree digest.
 

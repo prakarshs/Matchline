@@ -1,6 +1,6 @@
 package dev.matchline.domain;
 
-/** Cancel the identified order in its declared instrument, when sequenced later. */
+/** Cancel the remaining resting quantity of an order; concurrent sequencing comes later. */
 public record CancelOrder(InstrumentId instrument, OrderId orderId) implements OrderCommand {
     public CancelOrder {
         if (instrument == null || orderId == null) {

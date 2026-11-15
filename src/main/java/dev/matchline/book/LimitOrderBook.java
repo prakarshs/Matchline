@@ -1,5 +1,6 @@
 package dev.matchline.book;
 
+import dev.matchline.domain.CancelOrder;
 import dev.matchline.domain.InstrumentId;
 import dev.matchline.domain.OrderId;
 import dev.matchline.domain.OrderValidationException;
@@ -11,6 +12,7 @@ import dev.matchline.domain.Side;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,6 +20,7 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -31,7 +34,7 @@ import java.util.TreeMap;
  *
  * <p>Prices are indexed in balanced trees; each price level owns a FIFO
  * {@link LinkedHashMap}. The order-ID hash index points to the same mutable
- * order object. Future fill/cancel code will mutate/remove these objects from
+ * order object. Executions and cancellations mutate/remove these objects from
  * the book while preserving index consistency. No concurrent access is safe:
  * the single-writer gateway comes in Commit 06.
  */
@@ -39,25 +42,40 @@ public final class LimitOrderBook {
     public static final int DEFAULT_MAX_RESTING_ORDERS = 50_000;
     public static final int HARD_MAX_RESTING_ORDERS = 100_000;
     public static final int MAX_DEPTH_LEVELS = 1_000;
+    // Bounded per-book ID history, not a persisted deduplication guarantee.
+    // A fresh book starts a fresh ID epoch; journal replay must reconstruct it.
+    public static final int DEFAULT_MAX_ORDER_IDS = 1_000_000;
+    public static final int HARD_MAX_ORDER_IDS = 2_000_000;
 
     private final InstrumentId instrument;
     private final int maxRestingOrders;
+    private final int maxOrderIds;
     private final NavigableMap<PriceTicks, PriceLevel> bids =
             new TreeMap<>(Comparator.reverseOrder());
     private final NavigableMap<PriceTicks, PriceLevel> asks = new TreeMap<>();
     private final Map<OrderId, RestingOrder> byId = new HashMap<>();
+    // Includes accepted taker IDs with no remainder, cancelled IDs and filled maker IDs.
+    private final Set<OrderId> usedOrderIds = new HashSet<>();
     private long insertionOrdinal;
 
     public LimitOrderBook(InstrumentId instrument) {
-        this(instrument, DEFAULT_MAX_RESTING_ORDERS);
+        this(instrument, DEFAULT_MAX_RESTING_ORDERS, DEFAULT_MAX_ORDER_IDS);
     }
 
     public LimitOrderBook(InstrumentId instrument, int maxRestingOrders) {
+        this(instrument, maxRestingOrders, DEFAULT_MAX_ORDER_IDS);
+    }
+
+    public LimitOrderBook(InstrumentId instrument, int maxRestingOrders, int maxOrderIds) {
         this.instrument = Objects.requireNonNull(instrument, "instrument");
         if (maxRestingOrders < 1 || maxRestingOrders > HARD_MAX_RESTING_ORDERS) {
             throw new IllegalArgumentException("maxRestingOrders must be 1.." + HARD_MAX_RESTING_ORDERS);
         }
+        if (maxOrderIds < 1 || maxOrderIds > HARD_MAX_ORDER_IDS) {
+            throw new IllegalArgumentException("maxOrderIds must be 1.." + HARD_MAX_ORDER_IDS);
+        }
         this.maxRestingOrders = maxRestingOrders;
+        this.maxOrderIds = maxOrderIds;
     }
 
     public InstrumentId instrument() {
@@ -66,6 +84,11 @@ public final class LimitOrderBook {
 
     public int restingOrderCount() {
         return byId.size();
+    }
+
+    /** Count of accepted placement IDs in this book instance's lifetime. */
+    public int acceptedOrderIdCount() {
+        return usedOrderIds.size();
     }
 
     public int priceLevelCount(Side side) {
@@ -82,9 +105,9 @@ public final class LimitOrderBook {
      * makers from all indexes. An unexecuted remainder rests with a NEW local
      * insertion ordinal, behind existing orders at the same price.
      *
-     * <p>Duplicate IDs are currently forbidden only while an order is resting.
-     * Commit 05 will add lifetime deduplication and cancellation. Result order
-     * is deterministic for a given single-threaded command sequence.
+     * <p>Order IDs are unique for the lifetime of this book instance, including
+     * fully executed and cancelled orders. Result order is deterministic for
+     * a given single-threaded command sequence.
      */
     public MatchResult executeLimit(PlaceLimitOrder command) {
         if (command == null) {
@@ -94,10 +117,7 @@ public final class LimitOrderBook {
             throw reject(RejectionCode.INSTRUMENT_MISMATCH,
                     "order instrument " + command.instrument() + " does not match book " + instrument);
         }
-        if (byId.containsKey(command.orderId())) {
-            throw reject(RejectionCode.DUPLICATE_ORDER_ID,
-                    "order ID already rests in this book: " + command.orderId());
-        }
+        validateNewOrderId(command.orderId());
 
         // Preflight is intentionally read-only. A partially filled maker still
         // occupies its slot; only makers fully consumed by the incoming order
@@ -153,9 +173,11 @@ public final class LimitOrderBook {
             }
         }
         if (unfilled > 0) {
-            // Preflight proved space exists, and the book no longer crosses the
-            // new resting order; existing addResting validations still apply.
+            // Preflight proved space exists; insertion records the accepted ID.
             addResting(command, unfilled);
+        } else {
+            // Fully executed takers must also permanently consume their ID.
+            usedOrderIds.add(command.orderId());
         }
         return new MatchResult(command, command.quantity().value() - unfilled, unfilled, trades);
     }
@@ -174,8 +196,8 @@ public final class LimitOrderBook {
     /**
      * Store a residual quantity (including the unmatched result of executeLimit). The original command
      * quantity remains available in the immutable inspection view.
-     * An ID is currently unique among RESTING orders only; lifetime reuse
-     * prohibition and cancels are added in Commit 05.
+     * Every successful insertion consumes its ID for this book instance's
+     * lifetime, even if that order is later filled or cancelled.
      */
     public RestingOrderView addResting(PlaceLimitOrder command, long remainingQuantity) {
         if (command == null) {
@@ -185,10 +207,7 @@ public final class LimitOrderBook {
             throw reject(RejectionCode.INSTRUMENT_MISMATCH,
                     "order instrument " + command.instrument() + " does not match book " + instrument);
         }
-        if (byId.containsKey(command.orderId())) {
-            throw reject(RejectionCode.DUPLICATE_ORDER_ID,
-                    "order ID already rests in this book: " + command.orderId());
-        }
+        validateNewOrderId(command.orderId());
         if (remainingQuantity < 1 || remainingQuantity > command.quantity().value()) {
             throw reject(RejectionCode.INVALID_QUANTITY,
                     "resting remainder must be between 1 and the original order quantity");
@@ -223,8 +242,54 @@ public final class LimitOrderBook {
             levels.put(command.price(), level);
         }
         byId.put(command.orderId(), order);
+        usedOrderIds.add(command.orderId());
         insertionOrdinal = nextOrdinal;
         return order.view();
+    }
+
+    /**
+     * Cancel one currently resting order and remove ALL its unexecuted quantity.
+     * A missing (including already cancelled or fully filled) order rejects with
+     * ORDER_NOT_FOUND; an unsuccessful cancellation does not modify any index.
+     * The cancelled order ID remains in the lifetime ID history.
+     *
+     * <p>Caller ordering is the only ordering at this layer. A sequencer will
+     * serialize concurrent cancels and placements in Commit 06.
+     */
+    public CancelResult cancel(CancelOrder command) {
+        if (command == null) {
+            throw reject(RejectionCode.INVALID_COMMAND, "cancel command is required");
+        }
+        if (!instrument.equals(command.instrument())) {
+            throw reject(RejectionCode.INSTRUMENT_MISMATCH,
+                    "cancel instrument " + command.instrument() + " does not match book " + instrument);
+        }
+        RestingOrder order = byId.get(command.orderId());
+        if (order == null) {
+            throw reject(RejectionCode.ORDER_NOT_FOUND, "no resting order for ID: " + command.orderId());
+        }
+
+        RestingOrderView removed = order.view();
+        PriceLevel level = order.ownerLevel;
+        // These indexes are kept in sync by all successful insert/fill paths.
+        level.orders.remove(command.orderId());
+        level.totalQuantity -= order.remainingQuantity;
+        byId.remove(command.orderId());
+        if (level.orders.isEmpty()) {
+            levelsFor(order.original.side()).remove(order.original.price());
+        }
+        return new CancelResult(command, removed);
+    }
+
+    private void validateNewOrderId(OrderId id) {
+        if (usedOrderIds.contains(id)) {
+            throw reject(RejectionCode.DUPLICATE_ORDER_ID,
+                    "order ID was already accepted by this book: " + id);
+        }
+        if (usedOrderIds.size() >= maxOrderIds) {
+            throw reject(RejectionCode.ORDER_ID_HISTORY_CAPACITY_EXCEEDED,
+                    "book has reached its maximum accepted-order-ID history of " + maxOrderIds);
+        }
     }
 
     /** Average-case O(1) active order lookup, returning a detached immutable view. */

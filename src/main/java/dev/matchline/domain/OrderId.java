@@ -2,7 +2,7 @@ package dev.matchline.domain;
 
 /**
  * Case-sensitive, opaque identifier. The future book will enforce uniqueness
- * within one journal epoch; constructing this value cannot check duplicates.
+ * within one book lifetime / journal epoch; constructing this value cannot check duplicates.
  * ASCII only: one to 64 characters, beginning with an alphanumeric character.
  * No trimming or case conversion is performed.
  */
