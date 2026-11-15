@@ -12,4 +12,5 @@ WORKDIR /opt/matchline
 COPY --from=builder --chown=10001:10001 /src/build/install/matchline/ ./
 USER 10001:10001
 ENTRYPOINT ["/opt/matchline/bin/matchline"]
+EXPOSE 8080
 CMD ["--self-check"]

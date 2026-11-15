@@ -1,11 +1,17 @@
 package dev.matchline.bootstrap;
 
+import dev.matchline.http.HttpConfig;
+import dev.matchline.http.MatchlineHttpServer;
+
+import java.io.IOException;
 import java.io.PrintStream;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
 
 /**
- * Dependency-free CLI bootstrap and self-check. The matching core is currently
- * available via Java API, not CLI/HTTP; exit status 0 is not exchange readiness.
+ * CLI entrypoint. --serve starts the demo-only Java 21 HTTP adapter over the
+ * single-writer engine. Self-check still does not imply network readiness.
  */
 public final class MatchlineApplication {
 
@@ -36,11 +42,12 @@ public final class MatchlineApplication {
         return switch (option) {
             case "--help" -> {
                 out.println("MATCHLINE | deterministic exchange simulator | Java core");
-                out.println("Usage: matchline [--help | --version | --self-check | --recovery-demo]");
-                out.println("Matching and optional file journaling: Java API only. No CLI order entry or HTTP service.");
+                out.println("Usage: matchline [--help | --version | --self-check | --recovery-demo | --serve]");
+                out.println("--serve starts loopback HTTP on port 8080 (override using MATCHLINE_HTTP_* env).");
                 yield 0;
             }
             case "--recovery-demo" -> RecoveryDrill.run(out, err);
+            case "--serve" -> serve(out, err, System.getenv());
             case "--version" -> {
                 out.println(status.application() + " " + status.version());
                 yield 0;
@@ -62,5 +69,31 @@ public final class MatchlineApplication {
                 yield 2;
             }
         };
+    }
+
+    private static int serve(PrintStream out, PrintStream err, Map<String, String> environment) {
+        try (MatchlineHttpServer http = new MatchlineHttpServer(HttpConfig.fromEnvironment(environment))) {
+            http.start();
+            out.println("MATCHLINE HTTP READY | http://" + http.address().getHostString()
+                    + ":" + http.address().getPort() + "/api/v1/health");
+            Thread shutdown = new Thread(http::close, "matchline-http-shutdown");
+            Runtime.getRuntime().addShutdownHook(shutdown);
+            try {
+                new CountDownLatch(1).await(); // JVM shutdown hook or thread interruption stops service.
+            } finally {
+                try { Runtime.getRuntime().removeShutdownHook(shutdown); }
+                catch (IllegalStateException shuttingDown) { /* already terminating */ }
+            }
+            return 0;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return 0;
+        } catch (IllegalArgumentException badConfig) {
+            err.println("Invalid HTTP configuration: " + badConfig.getMessage());
+            return 2;
+        } catch (IOException startup) {
+            err.println("HTTP listener or journal could not start: " + startup.getMessage());
+            return 1;
+        }
     }
 }

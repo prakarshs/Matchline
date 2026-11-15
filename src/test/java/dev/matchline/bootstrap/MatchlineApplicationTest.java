@@ -15,7 +15,7 @@ class MatchlineApplicationTest {
         Result result = invoke("--self-check");
 
         assertThat(result.exitCode()).isZero();
-        assertThat(result.stdout()).contains("MATCHLINE BOOTSTRAP OK", "matching=true http=false journal=true");
+        assertThat(result.stdout()).contains("MATCHLINE BOOTSTRAP OK", "matching=true http=true journal=true");
         assertThat(result.stderr()).isEmpty();
     }
 
@@ -24,7 +24,7 @@ class MatchlineApplicationTest {
         Result result = invoke();
 
         assertThat(result.exitCode()).isZero();
-        assertThat(result.stdout()).contains("--self-check", "Java API only");
+        assertThat(result.stdout()).contains("--self-check", "--serve");
     }
 
     @Test

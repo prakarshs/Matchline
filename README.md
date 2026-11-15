@@ -4,7 +4,7 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 08 / deterministic restart and versioned snapshots.** The Java 21 matching core, cancellation, bounded ingress, append-only journal, deterministic decision-checked replay and optional periodic atomic snapshots are implemented. HTTP, benchmarks and the browser demo remain future increments. Replaying a file after a normal close is **not** proof of power-loss durability; see ADRs 0008–0009.
+> **Status: Commit 09 / real HTTP API and controlled volatile demo reset.** The Java 21 matching engine, ordered cancellation, single-writer ingress, CRC32C journal, deterministic replay, validated snapshots and bounded HTTP interface are implemented. JMH, browser visualization and public deployment remain future increments. This is an exchange **simulator**, never real trading infrastructure.
 
 ## Canonical development environment
 
@@ -12,7 +12,7 @@ MATCHLINE is a learning-oriented backend systems project focused on price-time p
 - **JDK:** a Linux JDK 21 installed in WSL and selected as the Project SDK in IntelliJ.
 - **Build:** Gradle **8.14.3** via `./gradlew` / `gradlew.bat`; Gradle Kotlin DSL. You do not need system Gradle.
 - **IDE:** IntelliJ IDEA Community, using the WSL JDK and Gradle wrapper.
-- **Docker (optional for this commit):** Docker Desktop with WSL2 integration. The container runs a **one-shot CLI smoke test**, not a server.
+- **Docker (optional):** Docker Desktop with WSL2 integration. The `smoke` profile runs a one-shot CLI check; the `api` profile serves a loopback-published HTTP simulator.
 
 **Gradle wrapper:** The official Gradle 8.14.3 wrapper JAR was downloaded and SHA-256 verified in the user's WSL environment. Ensure it is tracked in the Git repository. The initial bootstrap scripts remain for clean environments. See [wrapper details](gradle/wrapper/README.md). An internet connection is necessary for first Gradle dependency downloads.
 
@@ -34,10 +34,10 @@ Expected output from the self-check (JDK feature may be newer if you intentional
 
 ```text
 MATCHLINE BOOTSTRAP OK | Java 21
-matching=true http=false journal=true
+matching=true http=true journal=true
 ```
 
-Commit 07 passed in the user's environment after correcting the journal-tail test assertion. Commit 08 adds 28 JUnit test methods, including full-vs-snapshot model equivalence, corruption and pending-command recovery. Java 21 compilation, 28 local assertion-harness invocations and the CLI recovery drill have passed in the artifact-generation sandbox. The full Gradle/JUnit suite requires user verification; Gradle reports actual results under `build/reports/tests/test/`.
+Commits 01–08 were verified and pushed by the user. Commit 09 adds real HTTP integration tests and a standalone local HTTP smoke test. The Gradle/JUnit suite remains the user's official verification gate; actual results are in `build/reports/tests/test/`.
 
 Expected recovery demo output:
 
@@ -46,21 +46,77 @@ MATCHLINE RECOVERY OK | commands=6 snapshot=4 suffix=2 full=6 state_equal=true
 This is a normal-close replay demonstration; no abrupt crash or fsync guarantee was tested.
 ```
 
-There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 08.
+The HTTP service starts only with `--serve`; `--self-check` remains a one-shot CLI command.
 
-## Docker smoke test (optional)
+## Commit 09 — HTTP server, OpenAPI and bounded demo controls
+
+Start the **real Java 21 HTTP adapter**, which submits every mutation and book read to `SingleWriterSequencer`:
+
+```bash
+./gradlew run --args='--serve' --no-daemon --max-workers=1 --console=plain
+# In a second WSL terminal:
+curl -fsS http://127.0.0.1:8080/api/v1/health
+curl -fsS http://127.0.0.1:8080/openapi.yaml
+curl -fsS -X POST http://127.0.0.1:8080/api/v1/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"instrument":"DEMO","orderId":"B1","side":"BUY","priceTicks":100,"quantity":4}'
+curl -fsS -X POST http://127.0.0.1:8080/api/v1/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"instrument":"DEMO","orderId":"S1","side":"SELL","priceTicks":99,"quantity":3}'
+curl -fsS 'http://127.0.0.1:8080/api/v1/book?depth=10'
+curl -fsS 'http://127.0.0.1:8080/api/v1/trades?limit=10'
+curl -fsS 'http://127.0.0.1:8080/api/v1/events?limit=10'
+curl -fsS http://127.0.0.1:8080/api/v1/recovery
+curl -fsS -X POST http://127.0.0.1:8080/api/v1/orders/B1/cancel
+```
+
+The SELL executes three units against B1 at its **resting 100-tick price**; B1 has one unit remaining and cancellation removes it. Run this walkthrough on a **fresh volatile session**; existing persistent data may change the result. `POST /api/v1/orders` responds 200 for a processed placement, including `sequence`, `executedQuantity`, `restingQuantity`, `trades` and `durable`; it responds 409 with a **sequenced** `REJECTED` decision for a duplicate ID. Invalid input receives a structured 4xx without consuming a sequence. Admission overload returns 429. A command with an unconfirmed outcome can return 504 with its admitted sequence; **never blindly retry**.
+
+Supported endpoints: `GET /api/v1/health`, `POST /api/v1/orders`, `GET /api/v1/orders/{id}`, `POST /api/v1/orders/{id}/cancel`, `GET /api/v1/book?depth=10`, `GET /api/v1/trades?limit=50`, `GET /api/v1/events?limit=50`, `GET /api/v1/status`, `GET /api/v1/recovery`, and token-guarded `POST /api/v1/demo/reset`. The OpenAPI 3.0 document is served at [`/openapi.yaml`](src/main/resources/openapi.yaml). Only instrument `DEMO` is currently supported. Trades and events are **bounded, process-local HTTP-observed tapes** (2,048 compact decisions and 2,048 fills), not full durable audit history; after recovery they intentionally start empty. `/api/v1/recovery` exposes the **last startup recovery report**, not a live on-demand replay.
+
+By default the listener binds **127.0.0.1:8080**, accepts no cross-origin browser requests, and has **no reset token**. The server has a 4,096-byte request limit, 64 concurrent request permits, a global token budget of 240 requests burst / 4 requests per second, and a 5-second writer acknowledgement deadline. These are **demo safeguards, not production DDoS protection or authentication**. Server-side order submission is unauthenticated; do **not** expose this directly to the public internet. Explicit deployment hardening and public ingress are later commits. See [ADR 0010](docs/adr/0010-http-ingress-and-demo-reset.md).
+
+Configuration uses environment variables (see [`.env.example`](.env.example); it is not automatically loaded):
+
+```bash
+# Start an append-only, fsync-per-record journal in an ignored local-data dir:
+mkdir -p local-data
+MATCHLINE_JOURNAL_PATH=local-data/demo.mlj \
+MATCHLINE_SNAPSHOT_PATH=local-data/demo.mls \
+./gradlew run --args='--serve' --no-daemon --max-workers=1 --console=plain
+```
+
+On first startup it creates the journal; on subsequent starts it **strictly** verifies journal and snapshot, resolves a final pending command, and recovers state before accepting HTTP traffic. Snapshot frequency is fixed at **every 100 completed decisions** in the HTTP adapter. Without a configured path, the session is intentionally volatile. `MATCHLINE_DURABILITY=OS_BUFFERED` can be set for non-durable development; response `durable=false` then reflects that policy. The default when journaling is configured is `SYNC_EACH_RECORD`. Never overwrite/repair a live journal; a torn tail requires the **offline** repair procedure documented in Commit 08.
+
+To enable controlled volatile reset, set a secret **at least 32 characters** long in `MATCHLINE_RESET_TOKEN`, then call:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8080/api/v1/demo/reset \
+  -H "Authorization: Bearer ${MATCHLINE_RESET_TOKEN}"
+```
+
+The endpoint is **404/disabled** without a token, **403** without a correct token, and **409/refused** whenever a persistent journal is configured (even with a token). A successful reset drains prior work, starts a new volatile book and sequence epoch, and increments `generation`. Do not enable this endpoint on a public service without separate authentication/network protection. CORS is off unless `MATCHLINE_ALLOWED_ORIGIN` is an exact HTTP(S) origin (no wildcard); use HTTPS and a trusted reverse proxy for any remote clients.
+
+## Docker smoke test and local HTTP API (optional)
 
 ```bash
 docker compose --profile smoke run --build --rm matchline-smoke
 ```
 
-The container builds the app, prints the same bootstrap OK message and exits successfully. It is **not** intended to stay running.
+The smoke container prints bootstrap OK and exits. The separate API profile runs the Java listener, published on **host loopback only**:
 
-## Architecture (current core and future HTTP ingress)
+```bash
+docker compose --profile api up --build
+# In another terminal: curl -fsS http://127.0.0.1:8080/api/v1/health
+```
+
+The example API container is intentionally **volatile**, with reset and cross-origin requests disabled; the container does not mount or persist a journal.
+
+## Architecture (HTTP ingress through recovered single writer)
 
 ```mermaid
 flowchart LR
-  A[Future ingress / HTTP] --> B[Bounded command gateway]
+  A[HTTP adapter] --> B[Bounded command gateway]
   B --> C[Single writer sequencer]
   C --> D[Order book / price-time priority]
   C --> E[Versioned journal]
@@ -68,13 +124,13 @@ flowchart LR
   E --> G[Replay and recovery]
 ```
 
-Current separation: Java core holds matching rules; the sequenced writer records journal frames and optionally persists state snapshots. Restart reconstructs book state and historical IDs from validated journal records, optionally accelerated by a snapshot. HTTP ingress remains a future increment.
+Current separation: HTTP decodes and validates bounded JSON, then queues immutable commands and writer-ordered reads. The Java core owns matching; the sequenced writer optionally records journal frames and state snapshots. Restart verifies stored history before the HTTP service becomes available.
 
-For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-08-HANDOFF.md`](docs/COMMIT-08-HANDOFF.md).
+For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-09-HANDOFF.md`](docs/COMMIT-09-HANDOFF.md).
 
 ## Current domain contract and limitations
 
-- `PlaceLimitOrder(instrument, orderId, side, price, quantity)` and `CancelOrder(instrument, orderId)` are immutable validated requests. Both placing a limit order (`LimitOrderBook.executeLimit`) and cancelling a resting remainder (`LimitOrderBook.cancel`) are executable in memory; a journaled sequencer exists, but no HTTP gateway is present.
+- `PlaceLimitOrder(instrument, orderId, side, price, quantity)` and `CancelOrder(instrument, orderId)` are immutable validated requests. Both placing a limit order (`LimitOrderBook.executeLimit`) and cancelling a resting remainder (`LimitOrderBook.cancel`) are executable in memory; a journaled sequencer is reachable through the bounded HTTP adapter.
 - Instrument: 1–12 ASCII uppercase characters, starting A–Z; IDs: 1–64 ASCII characters, starting alphanumeric. Neither is normalized. The planned initial instrument is `DEMO`.
 - Price: whole ticks from **1 to 1,000,000,000**; new-order quantity: **1 to 1,000,000**. Invalid inputs fail fast with machine-readable rejection codes. No floating-point arithmetic.
 - Maximum **per-order** abstract tick-notional is `10^15`; it is not a currency amount. Totals across orders must still be checked.
@@ -223,7 +279,7 @@ Read [ADR 0009](docs/adr/0009-deterministic-replay-and-atomic-snapshots.md) and 
 - Full replay currently materializes the entire validated journal in memory; snapshot recovery still scans the entire journal for CRC and prefix verification. Snapshots accelerate **book reconstruction**, not yet initial full-file validation or constant-time startup. No journal compaction/rotation and no version migrations.
 - Snapshot SHA-256 guards against accidental corruption and cross-journal mixing, **not a malicious actor who can rewrite both file and hash**. The checkpoint's correctness assumes snapshots written by the trusted writer; an independent full replay remains the verification procedure.
 - A snapshot I/O error fail-stops the sequencer after the already-logged decision; callers with exceptional completions must treat outcomes as **ambiguous** and query recovered state rather than automatically resubmit a potentially duplicate ID.
-- The raw `LimitOrderBook` remains single-thread-owned; use the sequencer for concurrent admission. No HTTP API, SSE, JMH benchmark, controlled process-kill test, backup rotation, or production suitability. The CLI demo tests **normal close + restart**, not abrupt process death.
+- The raw `LimitOrderBook` remains single-thread-owned; use the sequencer for concurrent admission. No SSE, JMH benchmark, controlled process-kill test, backup rotation, public authentication or production suitability. The CLI demo tests **normal close + restart**, not abrupt process death.
 - `MANIFEST.sha256` is the historical Commit 01 starter-ZIP manifest, not a current rolling source-tree checksum.
 
 ## License

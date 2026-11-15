@@ -1,0 +1,321 @@
+openapi: 3.0.3
+info:
+  title: MATCHLINE Demo API
+  version: 0.1.0
+  description: >-
+    Deterministic single-instrument (DEMO) limit-order book simulator.
+    Not a trading venue. Price is integral abstract ticks, not currency.
+    All successful command responses reflect a single-writer decision;
+    durable=true only when synchronous fsync-per-record journaling is active.
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      summary: Readiness probe
+      responses:
+        '200':
+          description: Healthy sequencer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          $ref: '#/components/responses/Error'
+  /api/v1/orders:
+    post:
+      operationId: placeLimitOrder
+      summary: Place one limit order (may fill at multiple resting prices)
+      description: >-
+        Returns the completed writer decision, not merely queue admission.
+        Rejections after admission include a sequence. A 504 is ambiguous:
+        do not blindly retry because the order may execute later.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaceLimit'
+      responses:
+        '200':
+          description: Writer accepted and processed order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Decision'
+        '400':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: Sequenced business rejection, with decision REJECTED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Decision'
+        '413':
+          $ref: '#/components/responses/Error'
+        '415':
+          $ref: '#/components/responses/Error'
+        '422':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+        '503':
+          $ref: '#/components/responses/Error'
+        '504':
+          $ref: '#/components/responses/Error'
+  /api/v1/orders/{orderId}:
+    get:
+      operationId: findRestingOrder
+      summary: Look up only a currently resting order
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Active order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instrument: {type: string, example: DEMO}
+                  order: {$ref: '#/components/schemas/RestingOrder'}
+        '404':
+          $ref: '#/components/responses/Error'
+  /api/v1/orders/{orderId}/cancel:
+    post:
+      operationId: cancelRestingOrder
+      summary: Cancel the unexecuted remainder
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Decision'
+        '409':
+          description: Sequenced rejection for missing/fully filled order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Decision'
+  /api/v1/book:
+    get:
+      operationId: readBook
+      summary: Writer-consistent aggregated bid/ask depth
+      parameters:
+        - name: depth
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 1000, default: 10}
+      responses:
+        '200':
+          description: Book at a completed sequence boundary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Book'
+  /api/v1/trades:
+    get:
+      operationId: recentTrades
+      summary: Recent HTTP-observed executions (not durable)
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Most recent observed trades, ascending sequence/fillIndex
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source: {type: string, enum: [PROCESS_MEMORY]}
+                  instrument: {type: string}
+                  observedThroughSequence: {type: integer, format: int64}
+                  trades: {type: array, items: {$ref: '#/components/schemas/Trade'}}
+  /api/v1/events:
+    get:
+      operationId: recentDecisions
+      summary: Recent HTTP-observed completed command outcomes (not durable)
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Most recent observed command decisions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source: {type: string, enum: [PROCESS_MEMORY]}
+                  instrument: {type: string}
+                  observedThroughSequence: {type: integer, format: int64}
+                  events: {type: array, items: {$ref: '#/components/schemas/Decision'}}
+  /api/v1/status:
+    get:
+      operationId: getEngineStatus
+      summary: Sequencer state and ingress budget
+      responses:
+        '200':
+          description: Status (not a guarantee of disk durability)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/recovery:
+    get:
+      operationId: getRecoveryState
+      summary: Last verified startup replay, if any
+      description: >-
+        Does not scan an actively written journal and does not trigger a replay.
+        For offline correctness verification use the existing Java recovery drill.
+      responses:
+        '200':
+          description: Replay startup metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/demo/reset:
+    post:
+      operationId: resetVolatileDemo
+      summary: Reset volatile demo-only state, guarded by a bearer token
+      description: >-
+        Disabled without MATCHLINE_RESET_TOKEN (minimum 32 chars).
+        Not available when any persistent journal is configured.
+        Drains the writer, replaces the demo session, and increments generation.
+      security:
+        - DemoResetToken: []
+      responses:
+        '200':
+          description: Fresh volatile demo session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reset: {type: boolean}
+                  generation: {type: integer, format: int64}
+                  instrument: {type: string}
+                  sequence: {type: integer, format: int64}
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+components:
+  securitySchemes:
+    DemoResetToken:
+      type: http
+      scheme: bearer
+      description: MATCHLINE_RESET_TOKEN configured out-of-band
+  parameters:
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 64, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+  schemas:
+    PlaceLimit:
+      type: object
+      additionalProperties: false
+      required: [instrument, orderId, side, priceTicks, quantity]
+      properties:
+        instrument: {type: string, enum: [DEMO]}
+        orderId: {type: string, minLength: 1, maxLength: 64}
+        side: {type: string, enum: [BUY, SELL]}
+        priceTicks: {type: integer, format: int64, minimum: 1, maximum: 1000000000}
+        quantity: {type: integer, format: int64, minimum: 1, maximum: 1000000}
+      example:
+        instrument: DEMO
+        orderId: B1
+        side: BUY
+        priceTicks: 100
+        quantity: 4
+    RestingOrder:
+      type: object
+      properties:
+        orderId: {type: string}
+        side: {type: string, enum: [BUY, SELL]}
+        priceTicks: {type: integer, format: int64}
+        originalQuantity: {type: integer, format: int64}
+        remainingQuantity: {type: integer, format: int64}
+        fifoOrdinal: {type: integer, format: int64}
+    DepthLevel:
+      type: object
+      properties:
+        priceTicks: {type: integer, format: int64}
+        quantity: {type: integer, format: int64}
+        orders: {type: integer}
+    Book:
+      type: object
+      properties:
+        instrument: {type: string}
+        asOfSequence: {type: integer, format: int64}
+        restingOrders: {type: integer}
+        acceptedOrderIds: {type: integer}
+        bids: {type: array, items: {$ref: '#/components/schemas/DepthLevel'}}
+        asks: {type: array, items: {$ref: '#/components/schemas/DepthLevel'}}
+        bestBid: {nullable: true, allOf: [{$ref: '#/components/schemas/RestingOrder'}]}
+        bestAsk: {nullable: true, allOf: [{$ref: '#/components/schemas/RestingOrder'}]}
+    Trade:
+      type: object
+      properties:
+        sequence: {type: integer, format: int64}
+        fillIndex: {type: integer}
+        instrument: {type: string}
+        makerOrderId: {type: string}
+        takerOrderId: {type: string}
+        takerSide: {type: string, enum: [BUY, SELL]}
+        priceTicks: {type: integer, format: int64}
+        quantity: {type: integer, format: int64}
+    Decision:
+      type: object
+      properties:
+        sequence: {type: integer, format: int64}
+        instrument: {type: string}
+        orderId: {type: string}
+        decision: {type: string, enum: [PLACED, CANCELLED, REJECTED]}
+        durable: {type: boolean}
+        executedQuantity: {type: integer, format: int64}
+        restingQuantity: {type: integer, format: int64}
+        trades: {type: array, items: {$ref: '#/components/schemas/Trade'}}
+        cancelledQuantity: {type: integer, format: int64}
+        cancelledOrder: {$ref: '#/components/schemas/RestingOrder'}
+        rejection:
+          type: object
+          properties:
+            code: {type: string}
+            message: {type: string}
+    Health:
+      type: object
+      properties:
+        status: {type: string, enum: [UP, DOWN]}
+        instrument: {type: string, example: DEMO}
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: {type: string}
+            message: {type: string}
+        sequence:
+          type: integer
+          format: int64
+          description: May be present for an admitted command with unknown outcome
+  responses:
+    Error:
+      description: API-level error; no admission unless an explicit sequence is present
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
