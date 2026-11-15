@@ -4,7 +4,7 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 02 / domain contracts.** The project has a runnable Java bootstrap, validated immutable order-command types, and unit tests. It does **not yet** process orders, match trades, maintain an order book, journal commands, expose HTTP, or serve a browser demo. Those are planned, not complete features.
+> **Status: Commit 03 / in-memory resting order book.** The project has a runnable Java bootstrap, immutable validated command types, and a price-sorted/FIFO in-memory **storage structure** with a direct order-ID lookup. It does **not yet** process public commands, match trades, cancel orders, journal commands, expose HTTP, or serve a browser demo. Those are planned, not complete features.
 
 ## Canonical development environment
 
@@ -36,9 +36,9 @@ MATCHLINE BOOTSTRAP OK | Java 21
 matching=false http=false journal=false
 ```
 
-Expected: **all 7 original JUnit cases and the new domain cases pass**. Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
+Expected: **all 61 previously confirmed JUnit cases and the new order-book cases pass**. Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
 
-There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 02.
+There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 03.
 
 ## Docker smoke test (optional)
 
@@ -60,9 +60,9 @@ flowchart LR
   E --> G[Replay and recovery]
 ```
 
-Planned separation: core Java code holds domain rules; adapters handle HTTP and storage; state changes are made only by a sequenced writer per book. No database or network call enters the matching hot path. Only the plain-Java domain validation and command records exist; the rest is future work.
+Planned separation: core Java code holds domain rules; adapters handle HTTP and storage; state changes are made only by a sequenced writer per book. No database or network call enters the matching hot path. Only the plain-Java domain contracts and an in-memory, single-thread-owned resting-order store exist; the gateway and persistence remain future work.
 
-For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-02-HANDOFF.md`](docs/COMMIT-02-HANDOFF.md).
+For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-03-HANDOFF.md`](docs/COMMIT-03-HANDOFF.md).
 
 ## Current domain contract (no execution yet)
 
@@ -70,11 +70,33 @@ For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) a
 - Instrument: 1–12 ASCII uppercase characters, starting A–Z; IDs: 1–64 ASCII characters, starting alphanumeric. Neither is normalized. The planned initial instrument is `DEMO`.
 - Price: whole ticks from **1 to 1,000,000,000**; new-order quantity: **1 to 1,000,000**. Invalid inputs fail fast with machine-readable rejection codes. No floating-point arithmetic.
 - Maximum **per-order** abstract tick-notional is `10^15`; it is not a currency amount. Totals across orders must still be checked.
-- The future book will enforce order-ID uniqueness and handle state-dependent rejections. See [ADR 0003](docs/adr/0003-bounded-order-contracts.md).
+- Book storage now rejects **currently resting** duplicate IDs; lifetime uniqueness, state-dependent command processing and cancellation remain future work. See [ADR 0003](docs/adr/0003-bounded-order-contracts.md).
+
+## Current price-level book (Commit 03)
+
+`dev.matchline.book.LimitOrderBook` is a **storage primitive, not a matching service**:
+
+```java
+var book = new LimitOrderBook(new InstrumentId("DEMO"));
+book.addResting(new PlaceLimitOrder(
+    new InstrumentId("DEMO"), new OrderId("B1"), Side.BUY,
+    new PriceTicks(100), new OrderQuantity(4)));
+var bestBid = book.bestOrder(Side.BUY);
+var bidDepth = book.depth(Side.BUY, 10);
+var fifoAt100 = book.ordersAt(Side.BUY, new PriceTicks(100));
+```
+
+- `TreeMap` per side (BUY descending, SELL ascending), `LinkedHashMap` FIFO per level, and an active order-ID `HashMap` indexing the same internal objects.
+- Add to an existing price level and lookup by ID: expected O(1); creating a new price level: O(log P), where P = price levels. Best-price access: O(log P) worst-case. A depth/queue read is proportional to the result size.
+- Rejects orders of another instrument, duplicate **currently resting** IDs, invalid residual quantity, capacity overflow, and crossed-book seeding **before any mutation**. No execution is performed. Lifetime ID reuse prohibition remains for Commit 05.
+- Default capacity 50,000 resting orders/book (hard configuration ceiling 100,000); `depth` accepts 1..1,000 levels. Read views/lists are immutable; the book itself is **not thread-safe**, pending the sequencer.
+- Local insertion ordinals exist only to explain FIFO: they are not acceptance sequence IDs, persisted journal offsets or durability acknowledgements.
+
+See [ADR 0004](docs/adr/0004-price-level-order-book.md) and [Commit 03 handoff](docs/COMMIT-03-HANDOFF.md).
 
 ## Current limitations
 
-- No order book, matching execution, cancel processing, command sequencing or journalled acceptance.
+- No matching execution, cancellation, command sequencing or journalled acceptance. The book only stores explicitly seeded resting orders.
 - No HTTP API, SSE, persistence, replay, snapshot or benchmark.
 - No production suitability, deployment URL, latency number or throughput claim.
 - Initial dependency downloads require internet access. `MANIFEST.sha256` is the historical **Commit 01 bootstrap ZIP** integrity manifest, not a rolling source-tree digest.
