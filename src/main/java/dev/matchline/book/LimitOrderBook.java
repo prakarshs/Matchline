@@ -36,7 +36,7 @@ import java.util.TreeMap;
  * {@link LinkedHashMap}. The order-ID hash index points to the same mutable
  * order object. Executions and cancellations mutate/remove these objects from
  * the book while preserving index consistency. No concurrent access is safe:
- * the single-writer gateway comes in Commit 06.
+ * the owning single-writer gateway is supplied in Commit 06.
  */
 public final class LimitOrderBook {
     public static final int DEFAULT_MAX_RESTING_ORDERS = 50_000;
@@ -253,8 +253,7 @@ public final class LimitOrderBook {
      * ORDER_NOT_FOUND; an unsuccessful cancellation does not modify any index.
      * The cancelled order ID remains in the lifetime ID history.
      *
-     * <p>Caller ordering is the only ordering at this layer. A sequencer will
-     * serialize concurrent cancels and placements in Commit 06.
+     * <p>Caller ordering is the only ordering at this layer. The Commit 06 sequencer serializes concurrent cancels and placements.
      */
     public CancelResult cancel(CancelOrder command) {
         if (command == null) {

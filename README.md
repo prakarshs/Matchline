@@ -4,7 +4,7 @@
 
 MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
 
-> **Status: Commit 05 / in-memory limit-order matching and cancellation.** The Java 21 core supports price-time priority, partial/multiple fills, cancellation of resting remainders, immutable result values, and lifetime duplicate-ID rejection per book instance. Concurrent ingress, a durable journal, HTTP and the browser demo remain future increments.
+> **Status: Commit 06 / single-writer in-memory matching gateway.** The Java 21 core supports price-time priority, partial/multiple fills, cancellation of resting remainders, immutable result values, and lifetime duplicate-ID rejection per book instance. Concurrent bounded ingress and in-memory ordered completions are implemented. A durable journal, HTTP and the browser demo remain future increments.
 
 ## Canonical development environment
 
@@ -36,9 +36,9 @@ MATCHLINE BOOTSTRAP OK | Java 21
 matching=true http=false journal=false
 ```
 
-Expected after Commit 05: all **107 previously verified cases** plus the new cancellation and reference-model tests. The user confirms the actual total in Gradle output. Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
+Expected after Commit 06: the **133 Commit 05 cases** plus 17 newly added sequencer tests (150 total), subject to your actual Gradle test report. This is a planned case count, not a sandbox JUnit result. Gradle writes HTML test results to `build/reports/tests/test/index.html` and XML to `build/test-results/test/`. The user verifies the exact counts on their machine.
 
-There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 04.
+There is no HTTP health endpoint yet. Running `curl localhost:8080` is **not** an appropriate test for Commit 06.
 
 ## Docker smoke test (optional)
 
@@ -60,9 +60,9 @@ flowchart LR
   E --> G[Replay and recovery]
 ```
 
-Planned separation: core Java code holds domain rules; adapters handle HTTP and storage; state changes are made only by a sequenced writer per book. No database or network call enters the matching hot path. The plain-Java domain and in-memory price-time matching core exist; the single-writer gateway and persistence remain future work.
+Planned separation: core Java code holds domain rules; adapters handle HTTP and storage; state changes are made only by a sequenced writer per book. No database or network call enters the matching hot path. The plain-Java domain and in-memory price-time matching core exist; the single-writer gateway is implemented; persistence remains future work.
 
-For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-05-HANDOFF.md`](docs/COMMIT-05-HANDOFF.md).
+For the roadmap and design rationale, see [`docs/roadmap.md`](docs/roadmap.md) and [`docs/adr`](docs/adr). For the current change application and Git commands, see [`docs/COMMIT-06-HANDOFF.md`](docs/COMMIT-05-HANDOFF.md).
 
 ## Current domain contract and limitations
 
@@ -103,11 +103,42 @@ var fifoAt100 = book.ordersAt(Side.BUY, new PriceTicks(100));
 
 Cancels remove only outstanding quantity, not past trades, and can eliminate a price level. There is **no amend command**; cancel + place a new ID loses FIFO priority and is not atomic. See [ADR 0004](docs/adr/0004-price-level-order-book.md), [ADR 0005](docs/adr/0005-in-memory-matching-and-capacity.md), [ADR 0006](docs/adr/0006-cancellation-id-history-and-amend-policy.md), and [Commit 05 handoff](docs/COMMIT-05-HANDOFF.md).
 
+## Bounded single-writer ingress (Commit 06)
+
+`dev.matchline.sequencer.SingleWriterSequencer` **privately creates and owns** one
+book. Submission is non-blocking and returns a ticket with a gapless in-memory
+admission sequence. Awaiting the completion future returns an ordered decision.
+
+```java
+import dev.matchline.sequencer.*;
+import java.util.concurrent.TimeUnit;
+
+try (var engine = new SingleWriterSequencer(new InstrumentId("DEMO"), 1024)) {
+    var ticket = engine.submit(new PlaceLimitOrder(
+        new InstrumentId("DEMO"), new OrderId("B1"), Side.BUY,
+        new PriceTicks(100), new OrderQuantity(4)));
+    SequencedResult result = ticket.completion().toCompletableFuture().get(5, TimeUnit.SECONDS);
+    // result.sequence() == 1, result.decision() is a CommandDecision.Placed
+    BookReadView read = engine.inspect(10).get(5, TimeUnit.SECONDS);
+}
+```
+
+Queue overload (`INGRESS_OVERLOADED`) and closed ingress (`INGRESS_CLOSED`)
+reject synchronously and **do not** consume a sequence. A successfully queued
+command that later fails business validation **does** consume a sequence and
+returns `CommandDecision.Rejected`. Reads run in queue order on the writer but
+do not consume command sequence numbers. Completion indicates **volatile
+in-memory processing, not journal write or fsync**. `stopAccepting()` drains
+already queued work; `close()` waits for graceful termination (10-second limit).
+Read [ADR 0007](docs/adr/0007-single-writer-ingress-and-acknowledgements.md)
+and [Commit 06 handoff](docs/COMMIT-06-HANDOFF.md) for precise concurrency
+and lifecycle semantics.
+
 ## Current limitations
 
-- In-memory matching and cancellation are implemented, but neither the lifetime ID set nor any command outcome is persisted; there is no command sequencer or journalled acceptance.
+- The bounded single-writer sequencer exists, but neither order-ID history nor any result is persisted. Queue admission and completed in-memory commands can both be lost on process failure.
 - No HTTP API, SSE, persistence, journal replay, recovery snapshot or benchmark. Reapplying an identical in-memory list in a test is NOT crash recovery.
-- Not thread-safe; only the owning thread may touch the book. Cancel-before-match and match-before-cancel tests model call order, not concurrent racing threads. The CLI has a self-check, not an interactive order-placement interface.
+- The raw `LimitOrderBook` remains single-thread-owned and unsafe for direct concurrent callers. Use `SingleWriterSequencer` for concurrent admission and owner-thread read access. The CLI has a self-check, not an interactive order-placement interface.
 - No production suitability, deployment URL, latency number or throughput claim.
 - Initial dependency downloads require internet access. `MANIFEST.sha256` is the historical **Commit 01 bootstrap ZIP** integrity manifest, not a rolling source-tree digest.
 
