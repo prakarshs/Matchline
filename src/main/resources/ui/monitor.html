@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en" data-view="monitor">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#131513">
+  <title>MATCHLINE — Session Telemetry</title>
+  <link rel="icon" href="/ui/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/ui/monitor.css">
+  <script type="module" src="/ui/monitor.mjs"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <a href="/lab" class="brand"><span class="brand-mark">M</span><span>MATCHLINE <small>/ TELEMETRY</small></span></a>
+      <nav><a href="/lab">LABORATORY</a><a href="/preview">PREVIEW</a><a href="/actuator/health">HEALTH</a></nav>
+    </header>
+    <section class="intro">
+      <div class="eyebrow">ENGINE OBSERVABILITY / SESSION VIEW</div>
+      <h1>Measure the <em>matching.</em></h1>
+      <p>This page reads the <strong>real sequencer's counters</strong>, not simulated numbers. In public mode it follows the laboratory's isolated browser session. No trading decisions are made here.</p>
+      <div class="connection"><span id="dot" class="dot"></span><span role="status" id="status">CONNECTING</span><span id="age">—</span></div>
+    </section>
+    <section aria-label="Command counters" class="metric-grid">
+      <article class="metric"><span>01 / COMMANDS ADMITTED</span><strong id="admitted">—</strong><small>Accepted into the bounded writer queue</small></article>
+      <article class="metric"><span>02 / COMMANDS COMPLETED</span><strong id="completed">—</strong><small>Sequenced outcomes, including business rejections</small></article>
+      <article class="metric"><span>03 / QUEUED WORK</span><strong id="queued">—</strong><small id="queue-limit">Waiting / configured capacity</small></article>
+      <article class="metric"><span>04 / INGRESS REJECTED</span><strong id="rejected">—</strong><small>Queue full or writer not accepting</small></article>
+      <article class="metric"><span>05 / PROCESSING p95</span><strong id="processing">—</strong><small>Approximate histogram bucket upper bound</small></article>
+      <article class="metric"><span>06 / ACKNOWLEDGEMENT p99</span><strong id="ack">—</strong><small>Admission to confirmed sequenced decision</small></article>
+    </section>
+    <section class="footnote">
+      <div><strong>What this is</strong><p>Session-scoped JSON metrics from <code>/api/v1/metrics</code>, refreshed every 4 seconds. In public mode counters reset when this temporary session expires.</p></div>
+      <div><strong>What this isn't</strong><p>Not a Prometheus or Grafana dashboard. Spring's <code>/actuator/prometheus</code> exports process-wide metrics and is intentionally not public in demo mode.</p></div>
+    </section>
+    <footer><span>JAVA 21 / SPRING MVC / SINGLE WRITER</span><a href="/lab">BACK TO EXCHANGE LAB ↗</a></footer>
+  </main>
+</body>
+</html>

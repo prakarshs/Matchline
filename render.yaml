@@ -1,5 +1,5 @@
-# Optional Render Blueprint. Review free limits before creating the service.
-# Public HTTPS hostname is assigned by Render. Do not claim deployment until checked.
+# Render blueprint for the Spring Boot public-demo image. No paid disk or external service.
+# Preserve the exact portfolio origin in Render's service Environment settings.
 services:
   - type: web
     name: matchline-lab
@@ -8,9 +8,12 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/v1/health
     envVars:
+      - key: PORT
+        value: "8080"
       - key: MATCHLINE_HTTP_HOST
         value: 0.0.0.0
       - key: MATCHLINE_PUBLIC_DEMO
         value: "true"
-      # Configure the exact HTTPS portfolio origin in Render AFTER creating it.
-      # Do not configure CORS, journaling, reset, or custom durable storage on Free.
+      # Set MATCHLINE_EMBED_ORIGIN=https://portfolio.jhethia.workers.dev
+      # in the existing Render service's Environment page. No trailing slash.
+      # Do not enable journaling, reset, CORS or a persistent disk on the Free demo.

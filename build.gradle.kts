@@ -27,6 +27,15 @@ springBoot {
     mainClass.set("dev.matchline.spring.MatchlineSpringApplication")
 }
 
+// The `application` plugin must keep the legacy CLI main class for `run`/`installDist`.
+// Override the two Spring tasks explicitly: the Docker image uses `bootJar`, not `run`.
+tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
+    mainClass.set("dev.matchline.spring.MatchlineSpringApplication")
+}
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+    mainClass.set("dev.matchline.spring.MatchlineSpringApplication")
+}
+
 dependencies {
     // Import aligned versions of Spring and Micrometer without a second dependency-management plugin.
     implementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.2"))

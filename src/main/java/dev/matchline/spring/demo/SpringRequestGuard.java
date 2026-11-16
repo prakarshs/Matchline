@@ -21,6 +21,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 public final class SpringRequestGuard extends OncePerRequestFilter {
     private static final int MAX_IN_FLIGHT = 64;
+    private static final int MAX_POST_BODY_BYTES = 4_096;
     private static final double BURST = 240;
     private final Semaphore active = new Semaphore(MAX_IN_FLIGHT);
     private final HttpMetrics metrics = new HttpMetrics();
@@ -35,6 +36,8 @@ public final class SpringRequestGuard extends OncePerRequestFilter {
     private long lastRefill = System.nanoTime();
 
     public HttpMetrics metrics() { return metrics; }
+    public int activeRequests() { return MAX_IN_FLIGHT - active.availablePermits(); }
+    public int maxConcurrentRequests() { return MAX_IN_FLIGHT; }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
@@ -77,9 +80,9 @@ public final class SpringRequestGuard extends OncePerRequestFilter {
                 reject(response, 429, "HTTP_RATE_LIMIT", "global HTTP request budget exhausted");
                 return;
             }
-            // Basic bound on normal Content-Length bodies. Reverse-proxy limits
-            // are still required to cap chunked uploads before S05 cutover.
-            if (request.getContentLengthLong() > 4096 && "/api/v1/orders".equals(path)) {
+            // Every POST is bounded, including session creation and cancellation.
+            // Chunked/unknown-size requests are read only AFTER admission and auth.
+            if ("POST".equals(method) && request.getContentLengthLong() > MAX_POST_BODY_BYTES) {
                 reject(response, 413, "BODY_TOO_LARGE", "request body exceeds 4096 bytes");
                 return;
             }
@@ -101,7 +104,18 @@ public final class SpringRequestGuard extends OncePerRequestFilter {
                 }
                 request.setAttribute(MatchingRequestScope.LEASED_SESSION_ATTRIBUTE, leased);
             }
-            chain.doFilter(request, response);
+            HttpServletRequest bounded = request;
+            if ("POST".equals(method) && (request.getContentLengthLong() < 0
+                    || request.getHeader("Transfer-Encoding") != null)) {
+                // Stop after the FIRST offending byte: never read an unbounded upload.
+                byte[] body = request.getInputStream().readNBytes(MAX_POST_BODY_BYTES + 1);
+                if (body.length > MAX_POST_BODY_BYTES) {
+                    reject(response, 413, "BODY_TOO_LARGE", "request body exceeds 4096 bytes");
+                    return;
+                }
+                bounded = new BoundedRequestBody(request, body);
+            }
+            chain.doFilter(bounded, response);
         } finally {
             if (leased != null) leased.release();
             if (entered) active.release();

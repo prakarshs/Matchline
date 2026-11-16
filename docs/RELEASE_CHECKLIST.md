@@ -2,14 +2,16 @@
 
 ## Code and test gate
 
-- [ ] Clean working tree based on latest verified Commit 11
-- [ ] JDK 21 `./gradlew clean test installDist` passes
+- [ ] Clean working tree based on latest verified S04
+- [ ] JDK 21 `./gradlew clean test installDist bootJar` passes
 - [ ] `node --test ui/tests/*.test.mjs` passes
 - [ ] One-shot `--self-check` and `--recovery-demo` pass
-- [ ] `.http` walkthroughs pass in IntelliJ
+- [ ] Free WSL curl/Python smoke scripts pass (no IntelliJ HTTP-client dependency)
 - [ ] JMH raw benchmark produces a real report, saved under build/ or an
       explicit release evidence path, never a fabricated number
-- [ ] Docker build / smoke / public health succeeds in WSL
+- [ ] Spring Docker build / S05 release smoke succeeds in WSL
+- [ ] Legacy Dockerfile builds and --self-check succeeds for rollback
+- [ ] `/monitor` follows session metrics; `/actuator/prometheus` is blocked in public mode
 - [ ] GitHub Actions verify and docker jobs are green
 
 ## Ingress and browser gate

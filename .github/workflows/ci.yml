@@ -9,7 +9,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,13 +22,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Verify wrapper checksum and run Gradle tests
+      - name: Run Java tests and build BOTH delivery formats
         run: |
           chmod +x ./gradlew
-          ./gradlew clean test installDist --no-daemon --max-workers=1 --console=plain
+          ./gradlew clean test installDist bootJar --no-daemon --max-workers=1 --console=plain
       - name: Browser logic tests
         run: node --test ui/tests/*.test.mjs
-      - name: Verify packaged application starts
+      - name: Keep old CLI and crash-recovery smoke checks
         run: |
           ./build/install/matchline/bin/matchline --self-check
           ./build/install/matchline/bin/matchline --recovery-demo
@@ -43,26 +43,26 @@ jobs:
   docker:
     runs-on: ubuntu-24.04
     needs: verify
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - name: Container build and smoke
+      - name: Build new Spring Boot image
+        run: docker build -t matchline:spring-ci .
+      - name: Start isolated Spring public demo and run release smoke
         run: |
-          docker build -t matchline:ci .
-          docker run --rm matchline:ci --self-check
-      - name: Start isolated public demo and probe readiness
-        run: |
-          docker run -d --name matchline-ci --read-only \
+          docker run -d --name matchline-ci --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             --security-opt no-new-privileges --memory 512m \
-            -p 127.0.0.1:18080:8080 \
-            -e MATCHLINE_PUBLIC_DEMO=true matchline:ci
+            -p 127.0.0.1:18080:8080 -e PORT=8080 \
+            -e MATCHLINE_PUBLIC_DEMO=true \
+            -e MATCHLINE_EMBED_ORIGIN=https://portfolio.jhethia.workers.dev \
+            matchline:spring-ci
           trap 'docker logs matchline-ci || true; docker rm -f matchline-ci || true' EXIT
-          for attempt in $(seq 1 40); do
-            if curl -fsS http://127.0.0.1:18080/api/v1/health; then break; fi
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18080/api/v1/health >/dev/null; then break; fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:18080/api/v1/health
-          curl -fsS http://127.0.0.1:18080/lab >/dev/null
-          curl -fsS http://127.0.0.1:18080/preview >/dev/null
-          curl -fsS http://127.0.0.1:18080/embed >/dev/null
-          curl -fsS -X POST http://127.0.0.1:18080/api/v1/session
+          MATCHLINE_SPRING_BASE=http://127.0.0.1:18080 bash scripts/smoke-spring-release.sh
+      - name: Build old CLI image for a documented rollback path
+        run: |
+          docker build -f Dockerfile.legacy -t matchline:legacy-ci .
+          docker run --rm matchline:legacy-ci --self-check

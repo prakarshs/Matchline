@@ -10,16 +10,20 @@ import java.util.Map;
 final class UiAssets {
     private record Asset(String resource, String contentType, boolean preview) { }
 
-    private static final Map<String, Asset> ASSETS = Map.of(
-            "/lab", new Asset("/ui/lab.html", "text/html; charset=utf-8", false),
-            "/lab/", new Asset("/ui/lab.html", "text/html; charset=utf-8", false),
-            "/embed", new Asset("/ui/lab.html", "text/html; charset=utf-8", true),
-            "/embed/", new Asset("/ui/lab.html", "text/html; charset=utf-8", true),
-            "/preview", new Asset("/ui/preview.html", "text/html; charset=utf-8", true),
-            "/preview/", new Asset("/ui/preview.html", "text/html; charset=utf-8", true),
-            "/ui/app.css", new Asset("/ui/app.css", "text/css; charset=utf-8", false),
-            "/ui/app.mjs", new Asset("/ui/app.mjs", "text/javascript; charset=utf-8", false),
-            "/ui/mark.svg", new Asset("/ui/mark.svg", "image/svg+xml", false)
+    private static final Map<String, Asset> ASSETS = Map.ofEntries(
+            Map.entry("/lab", new Asset("/ui/lab.html", "text/html; charset=utf-8", false)),
+            Map.entry("/lab/", new Asset("/ui/lab.html", "text/html; charset=utf-8", false)),
+            Map.entry("/embed", new Asset("/ui/lab.html", "text/html; charset=utf-8", true)),
+            Map.entry("/embed/", new Asset("/ui/lab.html", "text/html; charset=utf-8", true)),
+            Map.entry("/preview", new Asset("/ui/preview.html", "text/html; charset=utf-8", true)),
+            Map.entry("/preview/", new Asset("/ui/preview.html", "text/html; charset=utf-8", true)),
+            Map.entry("/monitor", new Asset("/ui/monitor.html", "text/html; charset=utf-8", false)),
+            Map.entry("/monitor/", new Asset("/ui/monitor.html", "text/html; charset=utf-8", false)),
+            Map.entry("/ui/app.css", new Asset("/ui/app.css", "text/css; charset=utf-8", false)),
+            Map.entry("/ui/app.mjs", new Asset("/ui/app.mjs", "text/javascript; charset=utf-8", false)),
+            Map.entry("/ui/monitor.css", new Asset("/ui/monitor.css", "text/css; charset=utf-8", false)),
+            Map.entry("/ui/monitor.mjs", new Asset("/ui/monitor.mjs", "text/javascript; charset=utf-8", false)),
+            Map.entry("/ui/mark.svg", new Asset("/ui/mark.svg", "image/svg+xml", false))
     );
 
     private UiAssets() { }

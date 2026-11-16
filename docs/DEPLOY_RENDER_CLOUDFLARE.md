@@ -1,27 +1,29 @@
 # MATCHLINE release: Render Free + Cloudflare Pages
 
-**Manual deployment runbook; no service or DNS record has been created by the
-artifact author.** Consult provider dashboards and current pricing/limits
-before clicking Create. Free does not mean an unconditional cost guarantee.
+**S05 updates an existing user-managed Render service** (`https://matchline-kz8p.onrender.com`)
+and portfolio (`https://portfolio.jhethia.workers.dev`). No deployment is performed
+by the patch. Consult provider dashboards for free-plan limits before changing a service.
 
 ## 0. Local release gate
 
 ```bash
-./gradlew clean test installDist --no-daemon --max-workers=1 --console=plain
+./gradlew clean test installDist bootJar --no-daemon --max-workers=1 --console=plain
 node --test ui/tests/*.test.mjs
 ./build/install/matchline/bin/matchline --self-check
 ./build/install/matchline/bin/matchline --recovery-demo
 # If Docker Desktop is available in WSL:
-docker build -t matchline:local .
-docker run --rm matchline:local --self-check
+docker build -t matchline:spring .
+docker build -f Dockerfile.legacy -t matchline:legacy .
+docker run --rm matchline:legacy --self-check
+# Start Spring locally using docker compose --profile public-demo up --build
+# Then: MATCHLINE_SPRING_BASE=http://127.0.0.1:8081 bash scripts/smoke-spring-release.sh
 ```
 
-## 1. Smoke public-demo mode locally
+## 1. Verify both adapters locally
 
 ```bash
-MATCHLINE_PUBLIC_DEMO=true MATCHLINE_HTTP_PORT=8081 \
-MATCHLINE_EMBED_ORIGIN=https://YOUR-REAL-PORTFOLIO.pages.dev \
-./gradlew run --args='--serve' --no-daemon --max-workers=1 --console=plain
+MATCHLINE_EMBED_ORIGIN=https://portfolio.jhethia.workers.dev \
+docker compose --profile public-demo up --build
 ```
 
 In another terminal:
@@ -36,29 +38,35 @@ curl -sS http://127.0.0.1:8081/api/v1/dashboard?depth=5 \
   -H "X-Matchline-Session: $TOKEN"
 ```
 
-Visit `/lab`, `/preview`, `/embed` to verify the UI; the browser creates its
+Visit `/lab`, `/preview`, `/embed`, `/monitor` to verify the UI; the browser creates its
 own token. For local portfolio testing, use a localhost embed origin and
 serve portfolio HTML via an HTTP server, not `file://`. CSP cannot allow the
 `file://` origin.
 
 ## 2. Render Free Java service
 
-1. Push this **verified** commit to GitHub; check the GitHub Actions workflow
+1. **Before pushing**, run IntelliJ tests and the local Spring Docker release smoke.
+   If Render auto-deploys from main, pushing will replace the currently healthy
+   legacy service: disable auto-deploy until ready, or accept the cutover.
+   Then push and check the GitHub Actions workflow
    `Matchline verification` actually passes. CI status cannot be inferred
    from a local JUnit run.
-2. In Render, choose **New Web Service** from the Git repository (or use the
-   optional root `render.yaml` Blueprint). Set **Docker** runtime, **Free**
-   instance, Dockerfile at the repository root, and health-check path
-   `/api/v1/health`. Use a **single instance**; sessions are process-local.
-3. Configure `MATCHLINE_PUBLIC_DEMO=true` and
-   `MATCHLINE_HTTP_HOST=0.0.0.0`. The Java app reads the Render-supplied `PORT`
-   if `MATCHLINE_HTTP_PORT` is unset. Do not enable journal, snapshot, reset
-   token or CORS variables. Use the JRE heap limit in the Dockerfile.
-4. Deploy; inspect Render's build and runtime logs. In the Render UI copy
-   your **actual assigned** HTTPS URL, rather than guessing one.
-5. Test `/api/v1/health`, `/lab`, `/preview`, `/embed`, POST `/api/v1/session`,
-   actual order placement, cancellation, session isolation, HTTP 429 at
-   capacity, and CSP response headers.
+2. **Update the existing Render web service**, do not create another one.
+   Keep Dockerfile path `./Dockerfile` and health-check path `/api/v1/health`.
+   The default Dockerfile now starts the Spring `bootJar`. Use a **single instance**; sessions are process-local.
+3. Configure `MATCHLINE_PUBLIC_DEMO=true`, `MATCHLINE_HTTP_HOST=0.0.0.0`,
+   `PORT=8080` (or let Render supply PORT), and
+   `MATCHLINE_EMBED_ORIGIN=https://portfolio.jhethia.workers.dev`. Spring
+   reads `PORT`, not `MATCHLINE_HTTP_PORT`. Do not enable journal, snapshot,
+   reset token or CORS variables.
+4. Deploy; inspect Render's build and runtime logs. Confirm the **existing**
+   HTTPS URL continues to serve `/lab` and `/api/v1/health`.
+5. Run `MATCHLINE_SPRING_BASE=https://matchline-kz8p.onrender.com bash scripts/smoke-spring-release.sh`.
+   Verify `/lab`, `/embed`, `/preview` in the browser and in the portfolio iframe.
+   `GET /actuator/prometheus` returns 404 in public mode intentionally;
+   `/monitor` and token-scoped `/api/v1/metrics` remain available.
+   For a rollback, switch Dockerfile path to `./Dockerfile.legacy` and redeploy,
+   or use a known-good prior deployment in Render if supported.
 6. **Render Free limitations:** sleeps after around 15 idle minutes, can take
    around a minute to wake, has an ephemeral filesystem, and has workspace
    usage limits. The publicly hosted demo is explicitly **not durable**.
@@ -72,17 +80,17 @@ serve portfolio HTML via an HTTP server, not `file://`. CSP cannot allow the
    Upload). Confirm your actual `https://...pages.dev` site URL; no purchase
    of a custom domain is required.
 2. In Render's service environment set **one exact origin**:
-   `MATCHLINE_EMBED_ORIGIN=https://YOUR-REAL-SITE.pages.dev` and redeploy.
+   `MATCHLINE_EMBED_ORIGIN=https://portfolio.jhethia.workers.dev` and redeploy.
    Do not include a path, wildcard or trailing slash. For a custom domain,
    use its actual HTTPS origin instead.
 3. In the **portfolio's existing** `CONFIG.projects.matching` object set:
 
    ```javascript
    matching: {
-     previewUrl: 'https://YOUR-ACTUAL-SERVICE.onrender.com/preview',
-     demoUrl: 'https://YOUR-ACTUAL-SERVICE.onrender.com/embed',
-     sourceUrl: 'https://github.com/YOUR-ACCOUNT/MATCHLINE',
-     docsUrl: 'https://github.com/YOUR-ACCOUNT/MATCHLINE#readme'
+     previewUrl: 'https://matchline-kz8p.onrender.com/preview',
+     demoUrl: 'https://matchline-kz8p.onrender.com/embed',
+     sourceUrl: 'https://github.com/prakarshs/Matchline',
+     docsUrl: 'https://github.com/prakarshs/Matchline#readme'
    }
    ```
 
@@ -112,8 +120,8 @@ serve portfolio HTML via an HTTP server, not `file://`. CSP cannot allow the
 - Git commit SHA: `NOT YET PROVIDED`
 - GitHub Actions: `NOT YET VERIFIED`
 - Docker build/smoke: `NOT YET VERIFIED IN USER ENVIRONMENT`
-- Render HTTPS URL: `NOT DEPLOYED`
-- Cloudflare Pages URL: `NOT DEPLOYED`
+- Render HTTPS URL: `https://matchline-kz8p.onrender.com` (user-provided; S05 not yet verified live)
+- Portfolio URL: `https://portfolio.jhethia.workers.dev` (user-provided; S05 not yet verified live)
 - Full JMH result: `NOT PROVIDED`
 - Cross-site iframe checks: `PENDING`
 

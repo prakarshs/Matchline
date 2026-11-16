@@ -17,7 +17,10 @@ public final class SpringUiController {
             "/lab", new Asset("/ui/lab.html", "text/html", false),
             "/embed", new Asset("/ui/lab.html", "text/html", true),
             "/preview", new Asset("/ui/preview.html", "text/html", true),
+            "/monitor", new Asset("/ui/monitor.html", "text/html", false),
             "/ui/app.css", new Asset("/ui/app.css", "text/css", false),
+            "/ui/monitor.css", new Asset("/ui/monitor.css", "text/css", false),
+            "/ui/monitor.mjs", new Asset("/ui/monitor.mjs", "text/javascript", false),
             "/ui/app.mjs", new Asset("/ui/app.mjs", "text/javascript", false),
             "/ui/mark.svg", new Asset("/ui/mark.svg", "image/svg+xml", false),
             "/openapi.yaml", new Asset("/openapi.yaml", "application/yaml", false)
@@ -35,7 +38,8 @@ public final class SpringUiController {
     }
 
     @GetMapping({"/lab", "/lab/", "/embed", "/embed/", "/preview", "/preview/",
-            "/ui/app.css", "/ui/app.mjs", "/ui/mark.svg", "/openapi.yaml"})
+            "/ui/app.css", "/ui/app.mjs", "/ui/mark.svg", "/ui/monitor.css",
+            "/ui/monitor.mjs", "/monitor", "/monitor/", "/openapi.yaml"})
     public ResponseEntity<byte[]> asset(jakarta.servlet.http.HttpServletRequest request) throws IOException {
         String path = request.getRequestURI();
         String normalized = path.endsWith("/") && path.length() > 1 ? path.substring(0, path.length() - 1) : path;
