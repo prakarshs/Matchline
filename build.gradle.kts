@@ -36,6 +36,8 @@ dependencies {
 
     testImplementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.2"))
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // Boot 4 moved MockMvc test auto-configuration into its own module.
+    testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
     testImplementation(platform("org.junit:junit-bom:5.12.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.assertj:assertj-core:3.27.3")
