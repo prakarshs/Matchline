@@ -1,10 +1,51 @@
-# MATCHLINE
+# MATCHLINE — why a matching engine exists
 
-**A deterministic exchange-style matching engine simulator, under development.**
+**MATCHLINE is a fictional exchange-style matching engine simulator.** It is **not** a stock brokerage, financial adviser, real exchange, trading bot, or production trading system.
 
-MATCHLINE is a learning-oriented backend systems project focused on price-time priority, deterministic command ordering, crash recovery and measurable performance. It is **not** a trading venue; it never connects to an exchange or moves money.
+## Start here: what are we matching?
 
-> **Status: Commit 12 / release candidate awaiting user verification.** The Java 21 matching core, single-writer sequencing, journal/replay/snapshots, HTTP API, JMH harness, operational metrics, full lab and read-only preview are implemented. This increment adds bounded public-demo sessions, a portfolio embed, CI and a free-tier container deployment runbook. The user's Commit 11 screenshot confirms a functioning local browser view; the full Commit 12 Gradle/CI/Docker/deployment gates and actual JMH measurements are **not yet verified**. This is an exchange **simulator**, never real trading infrastructure.
+Imagine a marketplace for a made-up item called `DEMO`. A **buyer** submits a *limit order*: “I will buy up to 4 units, but I will pay **no more than** 100 ticks each.” A **seller** submits: “I will sell 3 units, but I want **at least** 99 ticks each.” These offers are compatible, so the exchange can execute a trade. A *tick* is simply an integral unit of price in this simulator, **not a rupee or dollar**.
+
+- **Bid:** offer to buy. **Ask:** offer to sell.
+- **Order book:** currently unmatched orders, grouped by price.
+- **Matcher / matching engine:** software that decides whether incoming and waiting orders may trade, and in which order.
+- **Price-time priority:** the best price wins; among orders at the same price, the oldest goes first (FIFO).
+- **Trade / fill:** an executed quantity. A *partial fill* leaves some order quantity unfilled.
+- **Maker:** a resting order already in the book. **Taker:** the incoming order that matches it. MATCHLINE executes at the maker's price.
+
+A stock's quoted price is **not permanently fixed**: prices emerge when buy/sell limits overlap. Market data might show the *last traded price*, best bid and best ask; these are not all the same thing. MATCHLINE models only a small part of real exchange behavior: validated limit orders, cancellation, ordering, execution, persistence and replay.
+
+### Your first dry run
+
+```text
+1. BUY B1  4 units @ 100     -> rests in the book
+2. SELL S1 3 units @ 99      -> crosses B1
+3. TRADE 3 units @ 100       -> maker (B1) price
+4. BUY B1 has 1 unit left    -> remains in the book
+```
+
+### Why build this as a backend project?
+
+It forces several hard but general backend decisions: which concurrent request is processed first; how to keep mutable state correct; how to reject overload; what an acknowledgement guarantees; how to recover after a crash; and how to measure latency without misleading benchmark claims.
+
+## Current architecture and Spring migration
+
+```text
+HTTP request -> [existing JDK HTTP adapter] -> bounded single-writer queue
+                                                   |
+                                                   v
+                   [plain Java matching algorithm + order book]
+                                                   |
+                                      optional journal / snapshot
+```
+
+The engine is **single-process**, not a distributed cluster. The free hosted demo has separate temporary order books for visitors; persistent journal/recovery is a separate local runtime mode.
+
+We are migrating the *application boundary* to **Spring Boot MVC**, while leaving the matching algorithm and journal as plain Java. **Migration S01 is additive**: Spring Boot starts on local port 8082 with health and Prometheus endpoints, but the existing working HTTP server still handles `/lab`, `/embed`, `/api/v1/orders`, Docker and Render. See [migration milestones](docs/SPRING-MIGRATION-ROADMAP.md) and [S01 verification](docs/SPRING-S01-HANDOFF.md).
+
+**Technology map:** Java 21 (domain and engine); Gradle Kotlin DSL (build); `TreeMap` + `LinkedHashMap` + hash index (book); single-writer worker and bounded queue (sequencing); `FileChannel` + CRC32C (journal); snapshots + replay (recovery); JUnit/AssertJ (verification); JMH (benchmark); Java built-in HTTP server (existing transport); Spring Boot 4.1 MVC + Actuator + Micrometer (new transport under migration); vanilla JS/CSS (lab); Docker/Render (public delivery).
+
+---
 
 ## Commit 12 — safe public-demo release candidate
 

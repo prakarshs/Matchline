@@ -1,6 +1,7 @@
 plugins {
     java
     application
+    id("org.springframework.boot") version "4.1.2"
 }
 
 group = "dev.matchline"
@@ -16,11 +17,25 @@ java {
     }
 }
 
+// Compatibility during migration: `run --args="--serve"` continues to use the verified JDK HTTP adapter.
 application {
     mainClass = "dev.matchline.bootstrap.MatchlineApplication"
 }
 
+// `bootRun` and `bootJar` use Spring Boot, without changing the legacy CLI's entrypoint.
+springBoot {
+    mainClass.set("dev.matchline.spring.MatchlineSpringApplication")
+}
+
 dependencies {
+    // Import aligned versions of Spring and Micrometer without a second dependency-management plugin.
+    implementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.2"))
+    implementation("org.springframework.boot:spring-boot-starter-webmvc")
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    runtimeOnly("io.micrometer:micrometer-registry-prometheus")
+
+    testImplementation(platform("org.springframework.boot:spring-boot-dependencies:4.1.2"))
+    testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation(platform("org.junit:junit-bom:5.12.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.assertj:assertj-core:3.27.3")
