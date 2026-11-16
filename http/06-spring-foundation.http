@@ -1,0 +1,21 @@
+### Spring MVC health, using the actual configured instrument (S02)
+GET http://127.0.0.1:8082/api/v1/health
+Accept: application/json
+
+> {%
+client.test("Spring engine is available", function() {
+    client.assert(response.status === 200);
+    client.assert(response.body.status === "UP");
+});
+%}
+
+### Spring Actuator process and engine health
+GET http://127.0.0.1:8082/actuator/health
+Accept: application/json
+
+> {% client.test("Actuator is UP", () => client.assert(response.status === 200)); %}
+
+### Prometheus *text* exporter (not a dashboard)
+GET http://127.0.0.1:8082/actuator/prometheus
+
+> {% client.test("Prometheus exposition is served", () => client.assert(response.status === 200)); %}

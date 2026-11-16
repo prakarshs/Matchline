@@ -4,11 +4,11 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * New application boundary. Package-limited component scanning keeps the existing
- * framework-independent matching, sequencing, and journal classes untouched.
+ * Spring application boundary for the staged migration. Scanning this package
+ * wires one writer, the application facade, Actuator, and the health controller;
+ * framework-independent domain and journal classes remain unchanged.
  *
- * Increment 01 deliberately exposes only health/observability. Do not change the
- * deployed legacy HTTP entrypoint until full API parity has been verified.
+ * S02 does NOT expose matching HTTP routes or replace the deployed CLI.
  */
 @SpringBootApplication
 public class MatchlineSpringApplication {
