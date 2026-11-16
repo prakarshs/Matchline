@@ -91,14 +91,16 @@ curl -sS -X POST http://127.0.0.1:8082/api/v1/orders \
   -d '{"instrument":"DEMO","orderId":"B1","side":"BUY","priceTicks":100,"quantity":4}'
 ```
 
-**Spring endpoints (S03):** `POST /api/v1/orders`, `POST /api/v1/orders/{id}/cancel`, `GET /api/v1/orders/{id}`, `GET /api/v1/book`, `GET /api/v1/health`, `/actuator/health`, `/actuator/prometheus`.
+**Spring endpoints (S04):** `POST /api/v1/orders`, `POST /api/v1/orders/{id}/cancel`, `GET /api/v1/orders/{id}`, `GET /api/v1/book`, `GET /api/v1/health`, `/actuator/health`, `/actuator/prometheus` (local mode only), `/api/v1/dashboard`, `/api/v1/trades`, `/api/v1/events`, `/api/v1/status`, `/api/v1/recovery`, and `POST /api/v1/session` in public-demo mode.
 
 ## Current migration boundary
 
 | Spring Boot (local, port 8082) | Existing public demo (Render) |
 |---|---|
-| Spring MVC, one in-memory writer, REST API, Actuator | Proven Java HTTP adapter, isolated visitor sessions, `/lab`, `/embed`, `/preview` |
-| **No durable startup or public sessions yet** | Journal/recovery available in separate local CLI mode; hosted sessions are **volatile** |
+| Spring MVC REST and `/lab`, `/embed`, `/preview`; optional isolated demo sessions | Proven Java HTTP adapter, isolated visitor sessions, `/lab`, `/embed`, `/preview` |
+| Default: one volatile writer. With `MATCHLINE_PUBLIC_DEMO=true`: up to 12 isolated volatile sessions | Journal/recovery available in separate local CLI mode; hosted sessions are **volatile** |
+
+To test Spring's visitor mode: add `MATCHLINE_PUBLIC_DEMO=true` to your IntelliJ Spring run configuration, restart, then run `bash scripts/smoke-spring-demo.sh`. To allow portfolio framing locally, set `MATCHLINE_EMBED_ORIGIN=https://portfolio.jhethia.workers.dev` as well.
 
 Both paths use the same plain-Java matching core. **The live Render service has not yet switched to Spring Boot.** This is a single-process educational simulator, not a distributed exchange or production trading platform.
 
@@ -108,7 +110,7 @@ Both paths use the same plain-Java matching core. **The live Render service has 
 |---|---|
 | [Engineering reference](docs/ENGINEERING_REFERENCE.md) | Detailed CLI, journal, recovery, limits and performance notes |
 | [Architecture decisions](docs/adr/) | Why each key data structure and concurrency policy exists |
-| [Spring S03 handoff](docs/SPRING-S03-HANDOFF.md) | REST contracts, error handling and test verification |
+| [Spring S04 handoff](docs/SPRING-S04-HANDOFF.md) | Session routing, UI policies, verification and limitations |
 | [Spring migration roadmap](docs/SPRING-MIGRATION-ROADMAP.md) | What's implemented vs. still planned |
 | [Benchmarks](docs/benchmarks/README.md) | Methodology and actual reported results |
 | [Security and public-demo limits](docs/SECURITY.md) | What the public demo does **not** guarantee |

@@ -16,16 +16,16 @@ import java.util.TreeMap;
  * cannot reorder visible events. It need not include timed-out admissions or
  * any history before process restart.
  */
-final class RecentTape {
-    static final int MAX_COMMANDS = 2_048;
-    static final int MAX_TRADES = 2_048;
+public final class RecentTape {
+    public static final int MAX_COMMANDS = 2_048;
+    public static final int MAX_TRADES = 2_048;
     private final NavigableMap<Long, Map<String, Object>> decisions = new TreeMap<>();
     private final NavigableMap<FillKey, Map<String, Object>> trades = new TreeMap<>();
     private final boolean durable;
 
-    RecentTape(boolean durable) { this.durable = durable; }
+    public RecentTape(boolean durable) { this.durable = durable; }
 
-    synchronized void record(SequencedResult result) {
+    public synchronized void record(SequencedResult result) {
         var event = ApiView.decision(result);
         event.put("durable", durable);
         if (result.decision() instanceof CommandDecision.Placed placed) {
@@ -42,14 +42,14 @@ final class RecentTape {
         while (decisions.size() > MAX_COMMANDS) decisions.pollFirstEntry();
     }
 
-    synchronized void clear() {
+    public synchronized void clear() {
         decisions.clear();
         trades.clear();
     }
 
-    synchronized int size() { return decisions.size(); }
+    public synchronized int size() { return decisions.size(); }
 
-    synchronized List<Object> events(int limit, boolean tradesOnly) {
+    public synchronized List<Object> events(int limit, boolean tradesOnly) {
         var stored = tradesOnly ? trades.values() : decisions.values();
         var all = new ArrayList<Object>(stored);
         return List.copyOf(all.subList(Math.max(0, all.size() - limit), all.size()));

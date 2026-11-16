@@ -34,6 +34,10 @@ public final class MatchingApplicationService {
         this.writer = Objects.requireNonNull(writer, "writer");
     }
 
+    // Internal application adapter: only the Spring routing facade may select a writer.
+    // Controllers must not take a direct reference to the mutable book.
+    SingleWriterSequencer sequencer() { return writer; }
+
     public InstrumentId instrument() { return writer.instrument(); }
     public CommandTicket submit(OrderCommand command) { return writer.submit(command); }
     public CompletableFuture<BookReadView> inspect(int depthLevels) { return writer.inspect(depthLevels); }

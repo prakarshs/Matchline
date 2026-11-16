@@ -25,12 +25,12 @@ import java.util.function.LongSupplier;
  * capability to a *synthetic* in-memory book, not a user login or durable ID.
  * No cookies are required: portfolio iframes can use X-Matchline-Session.
  */
-final class DemoSessions implements AutoCloseable {
-    static final int MAX_SESSIONS = 12;
-    static final int MAX_RESTING_PER_SESSION = 500;
-    static final int MAX_IDS_PER_SESSION = 3_000;
-    static final int QUEUE_CAPACITY = 64;
-    static final long IDLE_SECONDS = 20 * 60;
+public final class DemoSessions implements AutoCloseable {
+    public static final int MAX_SESSIONS = 12;
+    public static final int MAX_RESTING_PER_SESSION = 500;
+    public static final int MAX_IDS_PER_SESSION = 3_000;
+    public static final int QUEUE_CAPACITY = 64;
+    public static final long IDLE_SECONDS = 20 * 60;
     private static final long IDLE_NANOS = Duration.ofSeconds(IDLE_SECONDS).toNanos();
     private static final InstrumentId DEMO = new InstrumentId("DEMO");
     private final SecureRandom random = new SecureRandom();
@@ -38,10 +38,10 @@ final class DemoSessions implements AutoCloseable {
     private final Map<String, Session> sessions = new HashMap<>();
     private boolean closed;
 
-    DemoSessions() { this(System::nanoTime); }
+    public DemoSessions() { this(System::nanoTime); }
     DemoSessions(LongSupplier clock) { this.clock = Objects.requireNonNull(clock); }
 
-    static final class Session implements AutoCloseable {
+    public static final class Session implements AutoCloseable {
         final String token;
         final SingleWriterSequencer engine;
         final RecentTape tape = new RecentTape(false);
@@ -67,7 +67,7 @@ final class DemoSessions implements AutoCloseable {
             return true;
         }
 
-        synchronized void release() {
+        public synchronized void release() {
             if (inFlight < 1) throw new IllegalStateException("unbalanced lease");
             inFlight--;
             if (inFlight == 0 && retired) stop();
@@ -85,13 +85,18 @@ final class DemoSessions implements AutoCloseable {
             }
         }
 
+        public SingleWriterSequencer engine() { return engine; }
+        public RecentTape tape() { return tape; }
+        public boolean preview() { return preview; }
+        public String token() { return token; }
+
         @Override public void close() { retire(); }
     }
 
-    record Issued(Session session) { }
+    public record Issued(Session session) { }
 
     /** Returns null when all capacity is occupied by non-idle sessions. */
-    synchronized Issued create(boolean preview) throws Exception {
+    public synchronized Issued create(boolean preview) throws Exception {
         if (closed) throw new IllegalStateException("sessions already closed");
         long now = clock.getAsLong();
         expire(now);
@@ -114,7 +119,7 @@ final class DemoSessions implements AutoCloseable {
     }
 
     /** Null means invalid, unknown, expired, or retired; do not leak which. */
-    synchronized Session acquire(String token) {
+    public synchronized Session acquire(String token) {
         long now = clock.getAsLong();
         expire(now);
         if (token == null || !token.matches("[A-Za-z0-9_-]{43}")) return null;
@@ -122,7 +127,7 @@ final class DemoSessions implements AutoCloseable {
         return session != null && session.acquire(now) ? session : null;
     }
 
-    synchronized int count() { expire(clock.getAsLong()); return sessions.size(); }
+    public synchronized int count() { expire(clock.getAsLong()); return sessions.size(); }
 
     private void expire(long now) {
         var expired = new ArrayList<Session>();

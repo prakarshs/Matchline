@@ -7,7 +7,8 @@ import dev.matchline.domain.OrderValidationException;
 import dev.matchline.sequencer.CommandDecision;
 import dev.matchline.sequencer.CommandTicket;
 import dev.matchline.sequencer.SequencedResult;
-import dev.matchline.spring.MatchingApplicationService;
+import dev.matchline.spring.MatchingRequestScope;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -30,9 +31,9 @@ import org.springframework.web.bind.annotation.RestController;
  * Thin Spring MVC transport. Construct domain commands, call the S02 facade,
  * then serialize immutable DTOs. Never mutate LimitOrderBook directly.
  *
- * <p>S03 covers local, volatile order endpoints only (port 8082). Session
- * isolation, tape, persisted startup and the deployed UI remain on the old
- * HTTP adapter until S04/S05. An admitted command may have an unknown outcome
+ * <p>S04 selects either the local Spring writer or a leased, ephemeral
+ * visitor-owned writer. The journal-backed public deployment remains on the
+ * old adapter until S05. An admitted command may have an unknown outcome
  * on timeout: the caller must inspect state, not blindly retry a new ID.
  */
 @RestController
@@ -40,39 +41,47 @@ import org.springframework.web.bind.annotation.RestController;
 public final class SpringOrdersController {
     private static final int WAIT_SECONDS = 5;
     private static final Pattern DECIMAL = Pattern.compile("[0-9]{1,6}");
-    private final MatchingApplicationService engine;
+    private final MatchingRequestScope scope;
 
-    public SpringOrdersController(MatchingApplicationService engine) {
-        this.engine = engine;
+    public SpringOrdersController(MatchingRequestScope scope) {
+        this.scope = scope;
     }
 
     @PostMapping(path = "/orders", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<SpringApiResponses.Decision> place(@RequestBody Map<String, Object> payload) {
-        return complete(PlaceOrderRequest.fromJson(payload).toCommand());
+    public ResponseEntity<SpringApiResponses.Decision> place(@RequestBody Map<String, Object> payload,
+                                                              HttpServletRequest request) {
+        return scope.withEngine(request, context -> complete(PlaceOrderRequest.fromJson(payload).toCommand(), context));
     }
 
     @PostMapping(path = "/orders/{id}/cancel")
-    public ResponseEntity<SpringApiResponses.Decision> cancel(@PathVariable String id) {
-        return complete(new CancelOrder(engine.instrument(), parsePathId(id)));
+    public ResponseEntity<SpringApiResponses.Decision> cancel(@PathVariable String id,
+                                                               HttpServletRequest request) {
+        return scope.withEngine(request,
+                context -> complete(new CancelOrder(context.writer().instrument(), parsePathId(id)), context));
     }
 
     @GetMapping("/orders/{id}")
-    public SpringApiResponses.Lookup find(@PathVariable String id) {
-        Optional<dev.matchline.book.RestingOrderView> found = waitRead(engine.find(parsePathId(id)));
-        if (found.isEmpty()) {
-            throw new SpringApiException(404, "ORDER_NOT_FOUND", "no resting order with this ID");
-        }
-        return new SpringApiResponses.Lookup(engine.instrument().value(), SpringApiResponses.order(found.get()));
+    public SpringApiResponses.Lookup find(@PathVariable String id, HttpServletRequest request) {
+        return scope.withEngine(request, context -> {
+            Optional<dev.matchline.book.RestingOrderView> found = waitRead(context.writer().find(parsePathId(id)));
+            if (found.isEmpty()) {
+                throw new SpringApiException(404, "ORDER_NOT_FOUND", "no resting order with this ID");
+            }
+            return new SpringApiResponses.Lookup(context.writer().instrument().value(),
+                    SpringApiResponses.order(found.get()));
+        });
     }
 
     @GetMapping("/book")
-    public SpringApiResponses.Book book(@RequestParam MultiValueMap<String, String> query) {
-        int depth = parseDepth(query);
-        return SpringApiResponses.book(waitRead(engine.inspect(depth)));
+    public SpringApiResponses.Book book(@RequestParam MultiValueMap<String, String> query,
+                                        HttpServletRequest request) {
+        return scope.withEngine(request, context ->
+                SpringApiResponses.book(waitRead(context.writer().inspect(parseDepth(query)))));
     }
 
-    private ResponseEntity<SpringApiResponses.Decision> complete(dev.matchline.domain.OrderCommand command) {
-        CommandTicket ticket = engine.submit(command);
+    private ResponseEntity<SpringApiResponses.Decision> complete(dev.matchline.domain.OrderCommand command,
+                                                                     MatchingRequestScope.Engine context) {
+        CommandTicket ticket = context.writer().submit(command);
         SequencedResult outcome;
         try {
             outcome = ticket.completion().toCompletableFuture().get(WAIT_SECONDS, TimeUnit.SECONDS);
@@ -87,6 +96,8 @@ public final class SpringOrdersController {
             Thread.currentThread().interrupt();
             throw new SpringApiException(503, "INTERRUPTED", "request interrupted", ticket.sequence());
         }
+        // Record only confirmed outcomes; timeouts must not invent completed events.
+        context.tape().record(outcome);
         int status = outcome.decision() instanceof CommandDecision.Rejected ? 409 : 200;
         return ResponseEntity.status(status).body(SpringApiResponses.decision(outcome));
     }

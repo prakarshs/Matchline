@@ -8,7 +8,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * wires one writer, the application facade, Actuator, and the health controller;
  * framework-independent domain and journal classes remain unchanged.
  *
- * S02 does NOT expose matching HTTP routes or replace the deployed CLI.
+ * S04 exposes demo routes locally but does NOT replace the deployed CLI.
  */
 @SpringBootApplication
 public class MatchlineSpringApplication {
